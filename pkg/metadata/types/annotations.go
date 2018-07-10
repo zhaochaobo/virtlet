@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/ghodss/yaml"
+	uuid "github.com/nu7hatch/gouuid"
 
 	"github.com/Mirantis/virtlet/pkg/utils"
 )
@@ -37,6 +38,7 @@ const (
 	cloudInitImageType                = "VirtletCloudInitImageType"
 	cpuModel                          = "VirtletCPUModel"
 	sshKeysKeyName                    = "VirtletSSHKeys"
+	systemUUIDKeyName                 = "VirtletSystemUUID"
 	// CloudInitUserDataSourceKeyName is the name of user data source key in the pod annotations.
 	CloudInitUserDataSourceKeyName = "VirtletCloudInitUserDataSource"
 	// SSHKeySourceKeyName is the name of ssh key source key in the pod annotations.
@@ -89,6 +91,10 @@ type VirtletAnnotations struct {
 	SSHKeys []string
 	// DiskDriver specifies the disk driver to use.
 	DiskDriver DiskDriverName
+	// SystemUUID specifies particular uuid to use as system UUID
+	// in domain definition.  If not set - new one will be generated
+	// basing on pod id.
+	SystemUUID *uuid.UUID
 }
 
 // ExternalDataLoader is a function that loads external data that's specified
@@ -206,6 +212,13 @@ func (va *VirtletAnnotations) parsePodAnnotations(ns string, podAnnotations map[
 
 	va.CDImageType = CloudInitImageType(strings.ToLower(podAnnotations[cloudInitImageType]))
 	va.DiskDriver = DiskDriverName(podAnnotations[diskDriverKeyName])
+
+	if systemUUIDStr, found := podAnnotations[systemUUIDKeyName]; found {
+		var err error
+		if va.SystemUUID, err = uuid.ParseHex(systemUUIDStr); err != nil {
+			return fmt.Errorf("failed to parse %q as system uuid: %v", systemUUIDStr, err)
+		}
+	}
 
 	return nil
 }
