@@ -132,6 +132,7 @@
         DiskDriver: scsi
         MetaData: null
         SSHKeys: null
+        SystemUUID: null
         UserData: null
         UserDataOverwrite: false
         UserDataScript: ""
