@@ -19,7 +19,9 @@ package e2e
 import (
 	"flag"
 	"fmt"
+	"os"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +60,15 @@ func scheduleWaitSSH(vm **framework.VMInterface, ssh *framework.Executor) {
 }
 
 func waitSSH(vm *framework.VMInterface) framework.Executor {
+	ok := false
+	defer func() {
+		if ok {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "-----\nZZZZZ SSH FAILURE\n")
+		debug.PrintStack()
+		os.Exit(1)
+	}()
 	var ssh framework.Executor
 	Eventually(
 		func() error {
@@ -69,6 +80,7 @@ func waitSSH(vm *framework.VMInterface) framework.Executor {
 			_, err = framework.RunSimple(ssh)
 			return err
 		}, 60*5, 3).Should(Succeed())
+	ok = true
 	return ssh
 }
 
@@ -182,7 +194,7 @@ func includeUnsafe() {
 
 func withLoopbackBlockDevice(virtletNodeName, devPath *string) {
 	var nodeExecutor framework.Executor
-	BeforeAll(func() {
+	BeforeEach(func() {
 		var err error
 		*virtletNodeName, err = controller.VirtletNodeName()
 		Expect(err).NotTo(HaveOccurred())
@@ -204,7 +216,7 @@ func withLoopbackBlockDevice(virtletNodeName, devPath *string) {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	AfterAll(func() {
+	AfterEach(func() {
 		// The loopback device is detached by itself upon
 		// success (TODO: check why it happens), so we
 		// ignore errors here

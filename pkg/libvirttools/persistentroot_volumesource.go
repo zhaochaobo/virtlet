@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/golang/glog"
 	libvirtxml "github.com/libvirt/libvirt-go-xml"
 	digest "github.com/opencontainers/go-digest"
 
@@ -59,19 +60,24 @@ func (v *persistentRootVolume) copyImageToDev(imagePath string) error {
 }
 
 func (v *persistentRootVolume) Setup() (*libvirtxml.DomainDisk, *libvirtxml.DomainFilesystem, error) {
+	glog.V(4).Infof("Persistent rootfs setup on %q", v.dev.HostPath)
 	imagePath, imageDigest, imageSize, err := v.owner.ImageManager().GetImagePathDigestAndVirtualSize(v.config.Image)
 	if err != nil {
+		glog.V(4).Infof("Persistent rootfs setup on %q: image info error %v", v.dev.HostPath, err)
 		return nil, nil, err
 	}
 
 	if imageDigest.Algorithm() != digest.SHA256 {
+		glog.V(4).Infof("Persistent rootfs setup on %q: image info error %v", v.dev.HostPath, err)
 		return nil, nil, fmt.Errorf("unsupported digest algorithm %q", imageDigest.Algorithm())
 	}
 	imageHash, err := hex.DecodeString(imageDigest.Hex())
 	if err != nil {
+		glog.V(4).Infof("Persistent rootfs setup on %q: bad digest hex: %q", v.dev.HostPath, imageDigest.Hex())
 		return nil, nil, fmt.Errorf("bad digest hex: %q", imageDigest.Hex())
 	}
 	if len(imageHash) != sha256.Size {
+		glog.V(4).Infof("Persistent rootfs setup on %q: bad digest size: %q", v.dev.HostPath, imageDigest.Hex())
 		return nil, nil, fmt.Errorf("bad digest size: %q", imageDigest.Hex())
 	}
 
@@ -81,14 +87,21 @@ func (v *persistentRootVolume) Setup() (*libvirtxml.DomainDisk, *libvirtxml.Doma
 	headerMatches, err := ldh.EnsureDevHeaderMatches(v.dev.HostPath, hash)
 
 	if err == nil {
+		glog.V(4).Infof("Persistent rootfs setup on %q: headerMatches: %v", v.dev.HostPath, headerMatches)
 		err = ldh.Map(v.dev.HostPath, v.dmName(), imageSize)
 	}
 
-	if err == nil && !headerMatches {
-		err = v.copyImageToDev(imagePath)
+	if err == nil {
+		if headerMatches {
+			glog.V(4).Infof("Persistent rootfs setup on %q: header matches image %q, not overwriting", v.dev.HostPath, imagePath)
+		} else {
+			glog.V(4).Infof("Persistent rootfs setup on %q: writing image from %q", v.dev.HostPath, imagePath)
+			err = v.copyImageToDev(imagePath)
+		}
 	}
 
 	if err != nil {
+		glog.V(4).Infof("Persistent rootfs setup on %q: error: %v", v.dev.HostPath, err)
 		return nil, nil, err
 	}
 
