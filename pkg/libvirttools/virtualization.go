@@ -94,7 +94,7 @@ func (ds *domainSettings) createDomain(config *types.VMConfig) *libvirtxml.Domai
 				{Type: "tablet", Bus: "usb"},
 			},
 			Graphics: []libvirtxml.DomainGraphic{
-				{VNC: &libvirtxml.DomainGraphicVNC{Port: -1}},
+				{VNC: &libvirtxml.DomainGraphicVNC{Port: -1, WebSocket: -1, Listen: "0.0.0.0"}},
 			},
 			Videos: []libvirtxml.DomainVideo{
 				{Model: libvirtxml.DomainVideoModel{Type: "cirrus"}},
