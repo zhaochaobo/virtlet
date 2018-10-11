@@ -29,7 +29,7 @@ import (
 
 const (
 	waitProcRetryPeriod = 200 * time.Millisecond
-	waitProcTimeout     = 30 * time.Second
+	waitProcTimeout     = 300 * time.Second
 )
 
 func readProcFile(procFile string) (int, uint64, error) {
