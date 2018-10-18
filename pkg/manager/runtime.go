@@ -19,6 +19,8 @@ package manager
 import (
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"time"
 
 	cnitypes "github.com/containernetworking/cni/pkg/types"
@@ -39,6 +41,7 @@ const (
 	runtimeAPIVersion = "0.1.0"
 	runtimeName       = "virtlet"
 	runtimeVersion    = "0.1.0"
+	podIDFile         = "/dev/shm/virtlet_pods"
 )
 
 // StreamServer denotes a server that handles Attach and PortForward requests.
@@ -115,17 +118,28 @@ func (v *VirtletRuntimeService) RunPodSandbox(ctx context.Context, in *kubeapi.R
 	}
 	podID := config.Metadata.Uid
 	podNs := config.Metadata.Namespace
-
 	// Check if sandbox already exists, it may happen when virtlet restarts and kubelet "thinks" that sandbox disappered
 	sandbox := v.metadataStore.PodSandbox(podID)
 	sandboxInfo, err := sandbox.Retrieve()
-	if err == nil && sandboxInfo != nil {
+	// check the pod list in memory device
+	cmd := exec.Command("grep", podID, podIDFile)
+	execErr := cmd.Run()
+	if execErr == nil && err == nil && sandboxInfo != nil {
 		if sandboxInfo.State == types.PodSandboxState_SANDBOX_READY {
 			return &kubeapi.RunPodSandboxResponse{
 				PodSandboxId: podID,
 			}, nil
 		}
 	}
+
+	f, err := os.OpenFile(podIDFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0660)
+	if err != nil {
+		glog.Errorf("Error write file, err: %s", err)
+		return nil, errors.New("open shm file error")
+	}
+
+	f.Write([]byte(podID + "\n"))
+	f.Close()
 
 	state := kubeapi.PodSandboxState_SANDBOX_READY
 	pnd := &tapmanager.PodNetworkDesc{
