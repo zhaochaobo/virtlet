@@ -79,6 +79,7 @@ type domainSettings struct {
 }
 
 func (ds *domainSettings) createDomain(config *types.VMConfig) *libvirtxml.Domain {
+        glog.Infof("createDomain: Enter")
 	domainType := defaultDomainType
 	emulator := defaultEmulator
 	if !ds.useKvm {
@@ -183,7 +184,7 @@ func (ds *domainSettings) createDomain(config *types.VMConfig) *libvirtxml.Domai
 		domain.QEMUCommandline.Envs = append(domain.QEMUCommandline.Envs,
 			libvirtxml.DomainQEMUCommandlineEnv{Name: "VMWRAPPER_KEEP_PRIVS", Value: "1"})
 	}
-
+        glog.Infof("createDomain: create domain %v", domain)
 	return domain
 }
 
@@ -293,6 +294,8 @@ func (v *VirtualizationTool) addSerialDevicesToDomain(domain *libvirtxml.Domain)
 // all info in metadata store.  It returns domain uuid generated basing on pod
 // sandbox id.
 func (v *VirtualizationTool) CreateContainer(config *types.VMConfig, netFdKey string) (string, error) {
+
+	glog.Infof("Enter CreateContainer... ")
 	if err := config.LoadAnnotations(); err != nil {
 		return "", err
 	}
@@ -331,6 +334,7 @@ func (v *VirtualizationTool) CreateContainer(config *types.VMConfig, netFdKey st
 
 	domainDef := settings.createDomain(config)
 	diskList, err := newDiskList(config, v.volumeSource, v)
+	glog.Infof("createDomain uuid %q %v ", settings.domainUUID, err)
 	if err != nil {
 		return "", err
 	}

@@ -36,6 +36,7 @@ var ErrStorageVolumeNotFound = errors.New("storage volume not found")
 type StorageConnection interface {
 	// CreateStoragePool creates a storage pool based on the specified definition
 	CreateStoragePool(def *libvirtxml.StoragePool) (StoragePool, error)
+	DefineStoragePool(def *libvirtxml.StoragePool) (StoragePool, error)
 	// LookupByName tries to locate the storage pool by its
 	// UUID. In case if the domain cannot be found but no other
 	// error occurred, it returns ErrStoragePoolNotFound
@@ -59,6 +60,8 @@ type StoragePool interface {
 	RemoveVolumeByName(name string) error
 	// XML retrieves xml definition of the pool
 	XML() (*libvirtxml.StoragePool, error)
+        // Fresh current pool
+        Refresh() error
 }
 
 // StorageVolume represents a particular volume in pool

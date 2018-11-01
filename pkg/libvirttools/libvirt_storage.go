@@ -55,6 +55,36 @@ func (sc *libvirtStorageConnection) CreateStoragePool(def *libvirtxml.StoragePoo
 	if err != nil {
 		return nil, err
 	}
+
+	return &libvirtStoragePool{Mutex: &sc.Mutex, conn: sc.conn, p: p.(*libvirt.StoragePool)}, nil
+}
+
+func (sc *libvirtStorageConnection) DefineStoragePool(def *libvirtxml.StoragePool) (virt.StoragePool, error) {
+	xml, err := def.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	glog.V(2).Infof("Define storage pool:\n%s", xml)
+	p, err := sc.conn.invoke(func(c *libvirt.Connect) (interface{}, error) {
+		return c.StoragePoolDefineXML(xml, 0)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+        pool := p.(*libvirt.StoragePool)
+        err = pool.SetAutostart(true)
+        if err != nil {
+               glog.Warningf("Autostart set for pool failed %v", err)
+               return nil, err
+        }
+
+	err = pool.Build(libvirt.STORAGE_POOL_BUILD_REPAIR)
+        if err != nil {
+               glog.Warningf("build error happend %v", err)
+               return nil, err
+        }
+
 	return &libvirtStoragePool{Mutex: &sc.Mutex, conn: sc.conn, p: p.(*libvirt.StoragePool)}, nil
 }
 
@@ -100,6 +130,10 @@ func (pool *libvirtStoragePool) CreateStorageVol(def *libvirtxml.StorageVolume) 
 	xml, err := def.Marshal()
 	if err != nil {
 		return nil, err
+	}
+        // fresh pool at first
+	if err := pool.p.Refresh(0); err != nil {
+		return nil, fmt.Errorf("failed to refresh the storage pool: %v", err)
 	}
 	glog.V(2).Infof("Creating storage volume:\n%s", xml)
 	v, err := pool.p.StorageVolCreateXML(xml, 0)
@@ -149,6 +183,16 @@ func (pool *libvirtStoragePool) LookupVolumeByName(name string) (virt.StorageVol
 		return nil, err
 	}
 	return &libvirtStorageVolume{Mutex: pool.Mutex, name: name, v: v}, nil
+}
+
+func (pool *libvirtStoragePool) Refresh() (error) {
+	pool.Lock()
+	defer pool.Unlock()
+	err := pool.p.Refresh(0)
+	if err != nil {
+		return err
+	}
+        return nil
 }
 
 func (pool *libvirtStoragePool) RemoveVolumeByName(name string) error {

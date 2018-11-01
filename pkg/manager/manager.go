@@ -37,8 +37,8 @@ import (
 )
 
 const (
-	tapManagerConnectInterval = 200 * time.Millisecond
-	tapManagerAttemptCount    = 50
+	tapManagerConnectInterval = 500 * time.Millisecond
+	tapManagerAttemptCount    = 500
 	streamerSocketPath        = "/var/lib/libvirt/streamer.sock"
 	volumePoolName            = "volumes"
 	virtletSharedFsDir        = "/var/lib/virtlet/fs"

@@ -19,6 +19,7 @@ package libvirttools
 import (
 	"fmt"
 
+	"github.com/golang/glog"
 	libvirtxml "github.com/libvirt/libvirt-go-xml"
 
 	"github.com/Mirantis/virtlet/pkg/metadata/types"
@@ -68,6 +69,19 @@ func (v *rootVolume) createVolume() (virt.StorageVolume, error) {
 	if err != nil {
 		return nil, err
 	}
+
+        vols, err := storagePool.ListVolumes()
+        for n, v := range vols {
+            glog.Infof("createVolume  %d vols: %v err: %v", n, v.Name, err)
+        }
+
+        exist, err := storagePool.LookupVolumeByName(v.volumeName())
+        if err == nil {
+               return  exist, err
+        }
+        
+        glog.Infof("createVolume lookup %s err: %v", v.volumeName(), err)
+
 	return storagePool.CreateStorageVol(&libvirtxml.StorageVolume{
 		Type: "file",
 		Name: v.volumeName(),

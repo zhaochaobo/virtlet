@@ -37,6 +37,8 @@ func (v *VirtualizationTool) GarbageCollect() (allErrors []error) {
 	if errors != nil {
 		allErrors = append(allErrors, errors...)
 	}
+        // skip garbage collect
+        return
 	if fatal {
 		return
 	}

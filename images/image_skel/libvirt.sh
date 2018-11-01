@@ -17,6 +17,10 @@ if [[ -f /dind/vmwrapper ]]; then
   ln -fs /dind/vmwrapper /vmwrapper
 fi
 
+if [[ ! -f /etc/libvirt/qemu.conf ]]; then
+   tar xvfz /etc/libvirtd.tar.gz -C /etc/libvirt/
+fi
+
 function regenerate_qemu_conf() {
   if ls /sys/class/net/*/device/iommu_group >/dev/null 2>&1 ; then
     set $(ls -l /sys/class/net/*/device/iommu_group | sed 's@.*/\(.*\)@"/dev/vfio/\1",@')
@@ -49,8 +53,8 @@ if [[ -e /var/lib/libvirt/qemu ]]; then
   mv /var/lib/libvirt/qemu.ok /var/lib/libvirt/qemu
 fi
 
-# export LIBVIRT_LOG_FILTERS="1:qemu.qemu_process 1:qemu.qemu_command 1:qemu.qemu_domain"
-# export LIBVIRT_DEBUG=1
+export LIBVIRT_LOG_FILTERS="1:qemu.qemu_process 1:qemu.qemu_command 1:qemu.qemu_domain"
+export LIBVIRT_DEBUG=1
 
 # only make vmwrapper suid in libvirt container
 chown root.root /vmwrapper

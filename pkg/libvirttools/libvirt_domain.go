@@ -152,6 +152,10 @@ func (domain *libvirtDomain) Create() error {
 	return domain.d.Create()
 }
 
+func (domain *libvirtDomain) SetAutostart() error {
+	return domain.d.SetAutostart(true)
+}
+
 func (domain *libvirtDomain) Destroy() error {
 	return domain.d.Destroy()
 }
