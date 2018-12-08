@@ -54,7 +54,7 @@ if [[ -e /var/lib/libvirt/qemu ]]; then
 fi
 
 export LIBVIRT_LOG_FILTERS="1:qemu.qemu_process 1:qemu.qemu_command 1:qemu.qemu_domain"
-export LIBVIRT_DEBUG=1
+export LIBVIRT_DEBUG=0
 
 # only make vmwrapper suid in libvirt container
 chown root.root /vmwrapper

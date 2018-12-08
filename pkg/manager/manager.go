@@ -170,6 +170,7 @@ func (v *VirtletManager) recoverAndGC() error {
 	var errors []string
 	for _, err := range v.recoverNetworkNamespaces() {
 		errors = append(errors, fmt.Sprintf("* error recovering VM network namespaces: %v", err))
+                return err
 	}
 
 	for _, err := range v.virtTool.GarbageCollect() {

@@ -37,7 +37,7 @@ type Client interface {
 	// GetDummyNetwork creates a dummy network using CNI plugin.
 	// It's used for making a dummy gateway for Calico CNI plugin.
 	// It returns a CNI result and a path to the network namespace.
-	GetDummyNetwork() (*cnicurrent.Result, string, error)
+	GetDummyNetwork(podName, podNs string) (*cnicurrent.Result, string, error)
 }
 
 // client provides an implementation of Client interface.
@@ -58,7 +58,7 @@ func NewClient(pluginsDir, configsDir string) (*client, error) {
 }
 
 // GetDummyNetwork implements GetDummyNetwork method of Client interface.
-func (c *client) GetDummyNetwork() (*cnicurrent.Result, string, error) {
+func (c *client) GetDummyNetwork(podName, podNs string) (*cnicurrent.Result, string, error) {
 	// TODO: virtlet pod restarts should not grab another address for
 	// the gateway. That's not a big problem usually though
 	// as the IPs are not returned to Calico so both old
@@ -67,7 +67,8 @@ func (c *client) GetDummyNetwork() (*cnicurrent.Result, string, error) {
 	if err := CreateNetNS(podID); err != nil {
 		return nil, "", fmt.Errorf("couldn't create netns for fake pod %q: %v", podID, err)
 	}
-	r, err := c.AddSandboxToNetwork(podID, "", "")
+
+	r, err := c.AddSandboxToNetwork(podID, podName, podNs)
 	if err != nil {
 		return nil, "", fmt.Errorf("couldn't set up CNI for fake pod %q: %v", podID, err)
 	}
