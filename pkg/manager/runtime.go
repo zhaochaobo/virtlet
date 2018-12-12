@@ -309,16 +309,16 @@ func (v *VirtletRuntimeService) CreateContainer(ctx context.Context, in *kubeapi
 	// NOTE: there is no distinction between lack of key and other types of
 	// errors when accessing boltdb. This will be changed when we switch to
 	// storing whole marshaled sandbox metadata as json.
-	remainingContainers, err := v.metadataStore.ListPodContainers(podSandboxID)
-	if err != nil {
-		glog.V(3).Infof("Error retrieving pod %q containers", podSandboxID)
-	} else {
-		for _, container := range remainingContainers {
-			glog.V(3).Infof("CreateContainer: there's already a container in the sandbox (id: %s)", container.GetID())
-			response := &kubeapi.CreateContainerResponse{ContainerId: container.GetID()}
-			return response, nil
-		}
-	}
+//	remainingContainers, err := v.metadataStore.ListPodContainers(podSandboxID)
+//	if err != nil {
+//		glog.V(3).Infof("Error retrieving pod %q containers", podSandboxID)
+//	} else {
+//		for _, container := range remainingContainers {
+//			glog.V(3).Infof("CreateContainer: there's already a container in the sandbox (id: %s)", container.GetID())
+//			response := &kubeapi.CreateContainerResponse{ContainerId: container.GetID()}
+//			return response, nil
+//		}
+//	}
 
 	sandboxInfo, err := v.metadataStore.PodSandbox(podSandboxID).Retrieve()
 	if err != nil {
