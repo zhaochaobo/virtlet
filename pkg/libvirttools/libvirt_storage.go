@@ -72,18 +72,19 @@ func (sc *libvirtStorageConnection) DefineStoragePool(def *libvirtxml.StoragePoo
 		return nil, err
 	}
 
-        pool := p.(*libvirt.StoragePool)
-        err = pool.SetAutostart(true)
-        if err != nil {
-               glog.Warningf("Autostart set for pool failed %v", err)
-               return nil, err
-        }
+	pool := p.(*libvirt.StoragePool)
+	err = pool.SetAutostart(true)
+	if err != nil {
+		glog.Errorf("Autostart set for pool failed %v", err)
+		return nil, err
+	}
 
-	err = pool.Build(libvirt.STORAGE_POOL_BUILD_REPAIR)
-        if err != nil {
-               glog.Warningf("build error happend %v", err)
-               return nil, err
-        }
+	glog.V(2).Info("Start the storage pool")
+	err = pool.Create(libvirt.STORAGE_POOL_CREATE_NORMAL)
+	if err != nil {
+		glog.Errorf("create pool error happend %v", err)
+		return nil, err
+	}
 
 	return &libvirtStoragePool{Mutex: &sc.Mutex, conn: sc.conn, p: p.(*libvirt.StoragePool)}, nil
 }
@@ -131,7 +132,8 @@ func (pool *libvirtStoragePool) CreateStorageVol(def *libvirtxml.StorageVolume) 
 	if err != nil {
 		return nil, err
 	}
-        // fresh pool at first
+
+	// fresh pool at first
 	if err := pool.p.Refresh(0); err != nil {
 		return nil, fmt.Errorf("failed to refresh the storage pool: %v", err)
 	}
@@ -185,14 +187,13 @@ func (pool *libvirtStoragePool) LookupVolumeByName(name string) (virt.StorageVol
 	return &libvirtStorageVolume{Mutex: pool.Mutex, name: name, v: v}, nil
 }
 
-func (pool *libvirtStoragePool) Refresh() (error) {
+func (pool *libvirtStoragePool) Refresh() error {
 	pool.Lock()
 	defer pool.Unlock()
 	err := pool.p.Refresh(0)
 	if err != nil {
 		return err
 	}
-        return nil
 }
 
 func (pool *libvirtStoragePool) RemoveVolumeByName(name string) error {

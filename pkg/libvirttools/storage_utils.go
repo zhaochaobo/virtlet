@@ -60,21 +60,16 @@ func ensureStoragePool(conn virt.StorageConnection, name string) (virt.StoragePo
 
 	pool, err := conn.LookupStoragePoolByName(name)
 	if err == nil {
-                pool.Refresh()
+		pool.Refresh()
 		return pool, nil
 	}
-        // define a pool
-	conn.DefineStoragePool(&libvirtxml.StoragePool{
+	// define a pool
+	pool, err = conn.DefineStoragePool(&libvirtxml.StoragePool{
 		Type:   "dir",
 		Name:   name,
 		Target: &libvirtxml.StoragePoolTarget{Path: poolDir},
 	})
-        // start pool
-	return conn.CreateStoragePool(&libvirtxml.StoragePool{
-		Type:   "dir",
-		Name:   name,
-		Target: &libvirtxml.StoragePoolTarget{Path: poolDir},
-	})
+	return pool, err
 }
 
 func verifyRawDeviceAccess(path string) error {
