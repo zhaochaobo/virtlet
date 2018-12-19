@@ -85,6 +85,7 @@ func (sc *libvirtStorageConnection) DefineStoragePool(def *libvirtxml.StoragePoo
 		glog.Errorf("create pool error happend %v", err)
 		return nil, err
 	}
+
 	return &libvirtStoragePool{Mutex: &sc.Mutex, conn: sc.conn, p: p.(*libvirt.StoragePool)}, nil
 }
 
@@ -131,6 +132,7 @@ func (pool *libvirtStoragePool) CreateStorageVol(def *libvirtxml.StorageVolume) 
 	if err != nil {
 		return nil, err
 	}
+
 	// fresh pool at first
 	if err := pool.p.Refresh(0); err != nil {
 		return nil, fmt.Errorf("failed to refresh the storage pool: %v", err)
@@ -192,7 +194,6 @@ func (pool *libvirtStoragePool) Refresh() error {
 	if err != nil {
 		return err
 	}
-	return nil
 }
 
 func (pool *libvirtStoragePool) RemoveVolumeByName(name string) error {
