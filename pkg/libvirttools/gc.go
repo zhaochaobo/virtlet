@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
+        "github.com/golang/glog"
 	"github.com/Mirantis/virtlet/pkg/blockdev"
 )
 
@@ -37,10 +38,11 @@ func (v *VirtualizationTool) GarbageCollect() (allErrors []error) {
 	if errors != nil {
 		allErrors = append(allErrors, errors...)
 	}
+        // skip garbage collect
 	if fatal {
 		return
 	}
-
+        glog.Infof("GC ids: %v", ids)
 	allErrors = append(allErrors, v.removeOrphanDomains(ids)...)
 	allErrors = append(allErrors, v.removeOrphanRootVolumes(ids)...)
 	allErrors = append(allErrors, v.removeOrphanQcow2Volumes(ids)...)

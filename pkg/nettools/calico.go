@@ -125,7 +125,7 @@ func getDummyGateway(dummyNetwork *cnicurrent.Result) (net.IP, error) {
 // responses for VMs.
 // This function must be called from within the container network
 // namespace.
-func FixCalicoNetworking(netConfig *cnicurrent.Result, calicoSubnetSize int, getDummyNetwork func() (*cnicurrent.Result, string, error)) error {
+func FixCalicoNetworking(netConfig *cnicurrent.Result, calicoSubnetSize int, getDummyNetwork func(string, string, string) (*cnicurrent.Result, string, error),podID string, podName string, podNs string) error {
 	for n, ipConfig := range netConfig.IPs {
 		link, err := getLinkForIPConfig(netConfig, n)
 		if err != nil {
@@ -141,7 +141,7 @@ func FixCalicoNetworking(netConfig *cnicurrent.Result, calicoSubnetSize int, get
 		}
 		ipConfig.Address.Mask = net.CIDRMask(calicoSubnetSize, 32)
 		if haveCalicoGateway {
-			dummyNetwork, nsPath, err := getDummyNetwork()
+			dummyNetwork, nsPath, err := getDummyNetwork(podID,podName,podNs)
 			if err != nil {
 				return err
 			}

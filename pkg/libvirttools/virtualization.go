@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 
+	vconfig "github.com/Mirantis/virtlet/pkg/config"
 	"github.com/Mirantis/virtlet/pkg/metadata"
 	"github.com/Mirantis/virtlet/pkg/metadata/types"
 	"github.com/Mirantis/virtlet/pkg/utils"
@@ -94,7 +95,7 @@ func (ds *domainSettings) createDomain(config *types.VMConfig) *libvirtxml.Domai
 				{Type: "tablet", Bus: "usb"},
 			},
 			Graphics: []libvirtxml.DomainGraphic{
-				{VNC: &libvirtxml.DomainGraphicVNC{Port: -1, WebSocket: -1, Listen: "0.0.0.0"}},
+                                {VNC: &libvirtxml.DomainGraphicVNC{Port: -1, WebSocket: -1, Listen: "0.0.0.0"}},
 			},
 			Videos: []libvirtxml.DomainVideo{
 				{Model: libvirtxml.DomainVideoModel{Type: "cirrus"}},
@@ -140,10 +141,11 @@ func (ds *domainSettings) createDomain(config *types.VMConfig) *libvirtxml.Domai
 
 		QEMUCommandline: &libvirtxml.DomainQEMUCommandline{
 			Envs: []libvirtxml.DomainQEMUCommandlineEnv{
-				{Name: "VIRTLET_EMULATOR", Value: emulator},
-				{Name: "VIRTLET_NET_KEY", Value: ds.netFdKey},
-				{Name: "VIRTLET_CONTAINER_ID", Value: config.DomainUUID},
-				{Name: "VIRTLET_CONTAINER_LOG_PATH", Value: filepath.Join(config.LogDirectory, config.LogPath)},
+				{Name: vconfig.EmulatorEnvVarName, Value: emulator},
+				{Name: vconfig.NetKeyEnvVarName, Value: ds.netFdKey},
+				{Name: vconfig.ContainerIDEnvVarName, Value: config.DomainUUID},
+				{Name: vconfig.LogPathEnvVarName,
+					Value: filepath.Join(config.LogDirectory, config.LogPath)},
 			},
 		},
 	}
@@ -217,15 +219,16 @@ type VirtualizationConfig struct {
 
 // VirtualizationTool provides methods to operate on libvirt.
 type VirtualizationTool struct {
-	domainConn    virt.DomainConnection
-	storageConn   virt.StorageConnection
-	imageManager  ImageManager
-	metadataStore metadata.Store
-	clock         clockwork.Clock
-	volumeSource  VMVolumeSource
-	config        VirtualizationConfig
-	mounter       utils.Mounter
-	commander     utils.Commander
+	domainConn        virt.DomainConnection
+	storageConn       virt.StorageConnection
+	imageManager      ImageManager
+	metadataStore     metadata.Store
+	clock             clockwork.Clock
+	volumeSource      VMVolumeSource
+	config            VirtualizationConfig
+	mounter           utils.Mounter
+	mountPointChecker utils.MountPointChecker
+	commander         utils.Commander
 }
 
 var _ volumeOwner = &VirtualizationTool{}
@@ -236,17 +239,19 @@ func NewVirtualizationTool(domainConn virt.DomainConnection,
 	storageConn virt.StorageConnection, imageManager ImageManager,
 	metadataStore metadata.Store, volumeSource VMVolumeSource,
 	config VirtualizationConfig, mounter utils.Mounter,
+	mountPointChecker utils.MountPointChecker,
 	commander utils.Commander) *VirtualizationTool {
 	return &VirtualizationTool{
-		domainConn:    domainConn,
-		storageConn:   storageConn,
-		imageManager:  imageManager,
-		metadataStore: metadataStore,
-		clock:         clockwork.NewRealClock(),
-		volumeSource:  volumeSource,
-		config:        config,
-		mounter:       mounter,
-		commander:     commander,
+		domainConn:        domainConn,
+		storageConn:       storageConn,
+		imageManager:      imageManager,
+		metadataStore:     metadataStore,
+		clock:             clockwork.NewRealClock(),
+		volumeSource:      volumeSource,
+		config:            config,
+		mounter:           mounter,
+		mountPointChecker: mountPointChecker,
+		commander:         commander,
 	}
 }
 
@@ -811,6 +816,43 @@ func (v *VirtualizationTool) ContainerInfo(containerID string) (*types.Container
 		containerInfo.State = containerState
 	}
 	return containerInfo, nil
+}
+
+// UpdateCpusetsInContainerDefinition updates domain definition in libvirt for the VM
+// setting environment variable for vmwrapper with info about to which cpuset it should
+// pin itself
+func (v *VirtualizationTool) UpdateCpusetsInContainerDefinition(containerID, cpusets string) error {
+	domain, err := v.domainConn.LookupDomainByUUIDString(containerID)
+	if err != nil {
+		return err
+	}
+
+	domainxml, err := domain.XML()
+	if err != nil {
+		return err
+	}
+
+	found := false
+	envvars := domainxml.QEMUCommandline.Envs
+	for _, envvar := range envvars {
+		if envvar.Name == vconfig.CpusetsEnvVarName {
+			envvar.Value = cpusets
+			found = true
+		}
+	}
+	if !found && cpusets != "" {
+		domainxml.QEMUCommandline.Envs = append(envvars, libvirtxml.DomainQEMUCommandlineEnv{
+			Name:  vconfig.CpusetsEnvVarName,
+			Value: cpusets,
+		})
+	}
+
+	if err := domain.Undefine(); err != nil {
+		return err
+	}
+
+	_, err = v.domainConn.DefineDomain(domainxml)
+	return err
 }
 
 // VMStats returns current cpu/memory/disk usage for VM

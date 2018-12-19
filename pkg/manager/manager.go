@@ -37,8 +37,8 @@ import (
 )
 
 const (
-	tapManagerConnectInterval = 200 * time.Millisecond
-	tapManagerAttemptCount    = 50
+	tapManagerConnectInterval = 500 * time.Millisecond
+	tapManagerAttemptCount    = 500
 	streamerSocketPath        = "/var/lib/libvirt/streamer.sock"
 	volumePoolName            = "volumes"
 	virtletSharedFsDir        = "/var/lib/virtlet/fs"
@@ -127,15 +127,20 @@ func (v *VirtletManager) Run() error {
 
 		err = s.Start()
 		if err != nil {
-			glog.Warningf("Could not start stream server: %s", err)
+			glog.Warningf("Could not start stream server: %v", err)
 
 		}
 		streamServer = s
 		virtConfig.StreamerSocketPath = streamerSocketPath
 	}
 
+        mpc, err := utils.NewMountPointChecker()
+        if err != nil {
+                return fmt.Errorf("couldn't create mountpoint checker: %v", err)
+        }
+
 	volSrc := libvirttools.GetDefaultVolumeSource()
-	v.virtTool = libvirttools.NewVirtualizationTool(conn, conn, v.imageStore, v.metadataStore, volSrc, virtConfig, utils.NewMounter(), utils.DefaultCommander)
+        v.virtTool = libvirttools.NewVirtualizationTool(conn, conn, v.imageStore, v.metadataStore, volSrc, virtConfig, utils.NewMounter(), mpc, utils.DefaultCommander)
 
 	runtimeService := NewVirtletRuntimeService(v.virtTool, v.metadataStore, v.fdManager, streamServer, v.imageStore, nil)
 	imageService := NewVirtletImageService(v.imageStore, translator, nil)
@@ -143,10 +148,10 @@ func (v *VirtletManager) Run() error {
 	v.server = NewServer()
 	v.server.Register(runtimeService, imageService)
 
-	if err := v.recoverAndGC(); err != nil {
+//	if err := v.recoverAndGC(); err != nil {
 		// we consider recover / gc errors non-fatal
-		glog.Warning(err)
-	}
+//		glog.Warning(err)
+//	}
 
 	glog.V(1).Infof("Starting server on socket %s", *v.config.CRISocketPath)
 	if err = v.server.Serve(*v.config.CRISocketPath); err != nil {
@@ -170,6 +175,7 @@ func (v *VirtletManager) recoverAndGC() error {
 	var errors []string
 	for _, err := range v.recoverNetworkNamespaces() {
 		errors = append(errors, fmt.Sprintf("* error recovering VM network namespaces: %v", err))
+                //return err
 	}
 
 	for _, err := range v.virtTool.GarbageCollect() {
