@@ -61,6 +61,8 @@ type PodNetworkDesc struct {
 	PodNs string `json:"podNs"`
 	// PodName specifies the name of the pod
 	PodName string `json:"podName"`
+	// require ippool per network.
+	IpPool string `json:"ipPool"`
 	// DNS specifies DNS settings for the pod
 	DNS *cnitypes.DNS
 }
@@ -121,6 +123,9 @@ func NewTapFDSource(cniClient cni.Client, enableSriov bool, calicoSubnetSize int
 }
 
 func (s *TapFDSource) getDummyNetwork(podID, podName, podNS string) (*cnicurrent.Result, string, error) {
+	s.Mutex.Lock()
+	defer s.Mutex.Unlock()
+
 	if s.dummyNetwork == nil {
 		var err error
 		s.dummyNetwork, s.dummyNetworkNsPath, err = s.cniClient.GetDummyNetwork(podID, podName, podNS)
@@ -128,7 +133,6 @@ func (s *TapFDSource) getDummyNetwork(podID, podName, podNS string) (*cnicurrent
 			return nil, "", err
 		}
 		// s.dummyGateway = dummyResult.IPs[0].Address.IP
-
 	}
 	return s.dummyNetwork, s.dummyNetworkNsPath, nil
 }
@@ -185,7 +189,7 @@ func (s *TapFDSource) GetFDs(key string, data []byte) ([]int, []byte, error) {
 			gotError = true
 			return nil, fmt.Errorf("error fixing cni configuration: %v", err)
 		}
-		if err := nettools.FixCalicoNetworking(netConfig, s.calicoSubnetSize, s.getDummyNetwork, pnd.PodID, pnd.PodName + "dummy" , pnd.PodNs); err != nil {
+		if err := nettools.FixCalicoNetworking(netConfig, s.calicoSubnetSize, s.getDummyNetwork, pnd.PodID, pnd.PodName, pnd.PodNs); err != nil {
 			// don't fail in this case because there may be even no Calico
 			glog.Warningf("Calico detection/fix didn't work: %v", err)
 		}
@@ -193,10 +197,12 @@ func (s *TapFDSource) GetFDs(key string, data []byte) ([]int, []byte, error) {
 
 		var err error
 		if csn, err = nettools.SetupContainerSideNetwork(netConfig, netNSPath, allLinks, s.enableSriov, hostNS); err != nil {
+			glog.V(3).Infof("nettools setupcontainersidenetwork: %v", err)
 			return nil, err
 		}
 
 		if respData, err = json.Marshal(csn); err != nil {
+			glog.V(3).Infof("json Marshal:\n%v", err)
 			return nil, fmt.Errorf("error marshalling net config: %v", err)
 		}
 
@@ -236,6 +242,11 @@ func (s *TapFDSource) Release(key string) error {
 		if err := cni.DestroyNetNS(pn.pnd.PodID); err != nil {
 			glog.Errorf("Error when removing network namespace for pod sandbox %q: %v", pn.pnd.PodID, err)
 		}
+
+		// podID := utils.NewUUID5(pn.pnd.PodID, "dummy")
+		// if err := cni.DestroyNetNS(podID); err != nil {
+		// 	glog.Errorf("Error when removing dummy network for pod sandbox %q: %v", podID, err)
+		// }
 	}()
 
 	if err := nettools.ReconstructVFs(pn.csn, vmNS, false); err != nil {
@@ -255,10 +266,10 @@ func (s *TapFDSource) Release(key string) error {
 	if err := s.cniClient.RemoveSandboxFromNetwork(pn.pnd.PodID, pn.pnd.PodName, pn.pnd.PodNs); err != nil {
 		return fmt.Errorf("error removing pod sandbox %q from CNI network: %v", pn.pnd.PodID, err)
 	}
-        podID := utils.NewUUID5(pn.pnd.PodID, "dummy")
-	if err := s.cniClient.RemoveSandboxFromNetwork(podID, pn.pnd.PodName + "dummy", pn.pnd.PodNs); err != nil {
-		glog.Errorf("Error removing RemoveSandboxFromNetwork for pod sandbox %q: %v", pn.pnd.PodID, err)
-	}
+	// podID := utils.NewUUID5(pn.pnd.PodID, "dummy")
+	// if err := s.cniClient.RemoveSandboxFromNetwork(podID, pn.pnd.PodName+"dummy", pn.pnd.PodNs); err != nil {
+	// 	glog.Errorf("Error removing RemoveSandboxFromNetwork for pod sandbox %q: %v", pn.pnd.PodID, err)
+	// }
 
 	delete(s.fdMap, key)
 	return nil

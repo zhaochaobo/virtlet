@@ -194,6 +194,7 @@ func (pool *libvirtStoragePool) Refresh() error {
 	if err != nil {
 		return err
 	}
+	return nil
 }
 
 func (pool *libvirtStoragePool) RemoveVolumeByName(name string) error {

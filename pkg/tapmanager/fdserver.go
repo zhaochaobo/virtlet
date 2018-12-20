@@ -494,6 +494,7 @@ func (c *FDClient) AddFDs(key string, data interface{}) ([]byte, error) {
 	if !ok {
 		var err error
 		bs, err = json.Marshal(data)
+		glog.Info("DEBUG: AddFDs: %v", bs)
 		if err != nil {
 			return nil, fmt.Errorf("error marshalling json: %v", err)
 		}

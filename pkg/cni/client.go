@@ -18,6 +18,7 @@ package cni
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/containernetworking/cni/libcni"
 	cnicurrent "github.com/containernetworking/cni/pkg/types/current"
@@ -132,12 +133,26 @@ func newRealclient(pluginsDir, configsDir string) (*realClient, error) {
 }
 
 func (c *realClient) cniRuntimeConf(podID, podName, podNs string) *libcni.RuntimeConf {
-	r := &libcni.RuntimeConf{
-		ContainerID: podID,
-		NetNS:       PodNetNSPath(podID),
-		IfName:      "eth0",
-	}
-	if podName != "" && podNs != "" {
+	var r *libcni.RuntimeConf
+	if strings.HasSuffix(podName, "dummy") {
+		r = &libcni.RuntimeConf{
+			ContainerID: podID,
+			NetNS:       PodNetNSPath(podID),
+			IfName:      "virtlet-eth0",
+		}
+		//		podName = strings.TrimSuffix(podName, "dummy")
+		r.Args = [][2]string{
+			{"IgnoreUnknown", "1"},
+			{"K8S_POD_NAMESPACE", podNs},
+			//			{"K8S_POD_NAME", podName},
+			{"K8S_POD_INFRA_CONTAINER_ID", podID},
+		}
+	} else {
+		r = &libcni.RuntimeConf{
+			ContainerID: podID,
+			NetNS:       PodNetNSPath(podID),
+			IfName:      "eth0",
+		}
 		r.Args = [][2]string{
 			{"IgnoreUnknown", "1"},
 			{"K8S_POD_NAMESPACE", podNs},
