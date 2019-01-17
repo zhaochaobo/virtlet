@@ -18,6 +18,7 @@ package tapmanager
 
 import (
 	"encoding/json"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"strings"
@@ -193,6 +194,19 @@ func (s *TapFDSource) GetFDs(key string, data []byte) ([]int, []byte, error) {
 			// don't fail in this case because there may be even no Calico
 			glog.Warningf("Calico detection/fix didn't work: %v", err)
 		}
+                // check net.IP is multicast  or network address
+                for _, r := range netConfig.IPs {
+			// check network address
+                        ip := r.Address
+                        ipv4Addr, ipv4Net, _ := net.ParseCIDR(ip.String())
+                        ip1 := make(net.IP, len(ipv4Addr.To4()))
+                        binary.BigEndian.PutUint32(ip1, binary.BigEndian.Uint32(ipv4Addr.To4())|^binary.BigEndian.Uint32(net.IP(ipv4Net.Mask).To4()))
+                        if ipv4Addr.String() == ip1.String() || ipv4Addr.String() == ipv4Net.IP.String() {
+	                        glog.V(3).Infof("CNI got Boardcast or network ip address:\n%s", spew.Sdump(netConfig))
+	                	gotError = true
+                                return nil, fmt.Errorf("Got Boardcase or network ip address")
+                        }
+                }
 		glog.V(3).Infof("CNI Result after fix:\n%s", spew.Sdump(netConfig))
 
 		var err error
