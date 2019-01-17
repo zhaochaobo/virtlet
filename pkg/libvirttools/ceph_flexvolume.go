@@ -99,6 +99,11 @@ func (v *cephVolume) Setup() (*libvirtxml.DomainDisk, *libvirtxml.DomainFilesyst
 		return nil, nil, fmt.Errorf("invalid format of ceph monitor setting: %s. Expected ip:port", v.opts.Monitor)
 	}
 
+	// clean old secret is existing
+	if err := v.Teardown(); err != nil {
+		return nil, nil, fmt.Errorf("error clean existing secret: %v", err)
+	}
+
 	secret, err := v.owner.DomainConnection().DefineSecret(v.secretDef())
 	if err != nil {
 		return nil, nil, fmt.Errorf("error defining ceph secret: %v", err)
