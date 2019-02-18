@@ -24,6 +24,7 @@ import (
 
 	"github.com/ghodss/yaml"
 	libvirtxml "github.com/libvirt/libvirt-go-xml"
+	uuid "github.com/nu7hatch/gouuid"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/Mirantis/virtlet/pkg/utils"
@@ -43,6 +44,7 @@ const (
 	libvirtCPUSetting                 = "VirtletLibvirtCPUSetting"
 	sshKeysKeyName                    = "VirtletSSHKeys"
 	chown9pfsMountsKeyName            = "VirtletChown9pfsMounts"
+	systemUUIDKeyName                 = "VirtletSystemUUID"
 	// CloudInitUserDataSourceKeyName is the name of user data source key in the pod annotations.
 	CloudInitUserDataSourceKeyName = "VirtletCloudInitUserDataSource"
 	// SSHKeySourceKeyName is the name of ssh key source key in the pod annotations.
@@ -50,6 +52,10 @@ const (
 
 	cloudInitUserDataSourceKeyKeyName      = "VirtletCloudInitUserDataSourceKey"
 	cloudInitUserDataSourceEncodingKeyName = "VirtletCloudInitUserDataSourceEncoding"
+
+	// FilesFromDSKeyName is the name of data source key in the pod annotations
+	// for the files to be injected into the rootfs.
+	FilesFromDSKeyName = "VirtletFilesFromDataSource"
 )
 
 // CloudInitImageType specifies the image type used for cloud-init
@@ -107,18 +113,34 @@ type VirtletAnnotations struct {
 	RootVolumeSize int64
 	// VirtletChown9pfsMounts indicates if chown is enabled for 9pfs mounts.
 	VirtletChown9pfsMounts bool
+	// InjectedFiles specifies the files to be injected into VM's
+	// rootfs before booting the VM.
+	InjectedFiles map[string][]byte
+	// SystemUUID specifies fixed SMBIOS UUID to be used for the domain.
+	// If not set, the SMBIOS UUID will be automatically generated from the Pod ID.
+	SystemUUID *uuid.UUID
 }
 
-// ExternalDataLoader is a function that loads external data that's specified
-// in the pod annotations.
-type ExternalDataLoader func(va *VirtletAnnotations, Namespace string, podAnnotations map[string]string) error
+// ExternalDataLoader is used to load extra pod data from
+// Kubernetes ConfigMaps and secrets.
+type ExternalDataLoader interface {
+	// LoadCloudInitData loads cloud-init userdata and ssh keys
+	// from the data sources specified in the pod annotations.
+	LoadCloudInitData(va *VirtletAnnotations, namespace string, podAnnotations map[string]string) error
+	// LoadFileMap loads a set of files from the data sources.
+	LoadFileMap(namespace, dsSpec string) (map[string][]byte, error)
+}
 
 var externalDataLoader ExternalDataLoader
 
-// SetExternalDataLoader sets the external data loader function that
-// loads external data that's specified in the pod annotations.
+// SetExternalDataLoader sets the ExternalDataLoader to use
 func SetExternalDataLoader(loader ExternalDataLoader) {
 	externalDataLoader = loader
+}
+
+// GetExternalDataLoader returns the current ExternalDataLoader
+func GetExternalDataLoader() ExternalDataLoader {
+	return externalDataLoader
 }
 
 func (va *VirtletAnnotations) applyDefaults() {
@@ -189,8 +211,17 @@ func (va *VirtletAnnotations) parsePodAnnotations(ns string, podAnnotations map[
 		va.UserDataOverwrite = true
 	}
 	if externalDataLoader != nil {
-		if err := externalDataLoader(va, ns, podAnnotations); err != nil {
-			return fmt.Errorf("error loading data via external data loader: %v", err)
+		if err := externalDataLoader.LoadCloudInitData(va, ns, podAnnotations); err != nil {
+			return fmt.Errorf("error loading data via external user data loader: %v", err)
+		}
+	}
+
+	if filesFromDSstr, found := podAnnotations[FilesFromDSKeyName]; found && externalDataLoader != nil {
+		var err error
+		va.InjectedFiles, err = externalDataLoader.LoadFileMap(ns, filesFromDSstr)
+		if err != nil {
+			return fmt.Errorf("error loading data source %q as a file map: %v",
+				filesFromDSstr, err)
 		}
 	}
 
@@ -278,6 +309,13 @@ func (va *VirtletAnnotations) parsePodAnnotations(ns string, podAnnotations map[
 
 	if podAnnotations[chown9pfsMountsKeyName] == "true" {
 		va.VirtletChown9pfsMounts = true
+	}
+
+	if systemUUIDStr, found := podAnnotations[systemUUIDKeyName]; found {
+		var err error
+		if va.SystemUUID, err = uuid.ParseHex(systemUUIDStr); err != nil {
+			return fmt.Errorf("failed to parse %q as a UUID: %v", systemUUIDStr, err)
+		}
 	}
 
 	return nil

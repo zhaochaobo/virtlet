@@ -4,9 +4,10 @@ set -o nounset
 set -o pipefail
 set -o errtrace
 
-CRIPROXY_DEB_URL="${CRIPROXY_DEB_URL:-https://github.com/Mirantis/criproxy/releases/download/v0.12.0/criproxy-nodeps_0.12.0_amd64.deb}"
+CRIPROXY_DEB_URL="${CRIPROXY_DEB_URL:-https://github.com/Mirantis/criproxy/releases/download/v0.14.0/criproxy-nodeps_0.14.0_amd64.deb}"
 VIRTLET_IMAGE="${VIRTLET_IMAGE:-mirantis/virtlet}"
 VIRTLET_SKIP_RSYNC="${VIRTLET_SKIP_RSYNC:-}"
+VIRTLET_SKIP_VENDOR="${VIRTLET_SKIP_VENDOR:-false}"
 VIRTLET_RSYNC_PORT="${VIRTLET_RSYNC_PORT:-18730}"
 VIRTLET_ON_MASTER="${VIRTLET_ON_MASTER:-}"
 VIRTLET_MULTI_NODE="${VIRTLET_MULTI_NODE:-}"
@@ -15,6 +16,8 @@ DOCKER_SOCKET_PATH="${DOCKER_SOCKET_PATH:-/var/run/docker.sock}"
 FORCE_UPDATE_IMAGE="${FORCE_UPDATE_IMAGE:-}"
 IMAGE_REGEXP_TRANSLATION="${IMAGE_REGEXP_TRANSLATION:-1}"
 GH_RELEASE_TEST_USER="ivan4th"
+DIND_CRI="${DIND_CRI:-containerd}"
+MKDOCS_SERVE_ADDRESS="${MKDOCS_SERVE_ADDRESS:-localhost:8042}"
 
 # Note that project_dir must not end with slash
 project_dir="$(cd "$(dirname "${BASH_SOURCE}")/.." && pwd)"
@@ -166,7 +169,6 @@ function ensure_build_container {
                -v /lib/modules:/lib/modules:ro \
                -v /boot:/boot:ro \
                -v "${DOCKER_SOCKET_PATH}:/var/run/docker.sock" \
-               -e DOCKER_HOST="${DOCKER_HOST:-}" \
                -e DOCKER_MACHINE_NAME="${DOCKER_MACHINE_NAME:-}" \
                -e DOCKER_TLS_VERIFY="${DOCKER_TLS_VERIFY:-}" \
                -e TRAVIS="${TRAVIS:-}" \
@@ -178,6 +180,8 @@ function ensure_build_container {
                -e VIRTLET_ON_MASTER="${VIRTLET_ON_MASTER:-}" \
                -e VIRTLET_MULTI_NODE="${VIRTLET_MULTI_NODE:-}" \
                -e GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+               -e MKDOCS_SERVE_ADDRESS="${MKDOCS_SERVE_ADDRESS:-}" \
+               -e VIRTLET_SKIP_VENDOR="${VIRTLET_SKIP_VENDOR:-false}" \
                ${docker_cert_args[@]+"${docker_cert_args[@]}"} \
                --name virtlet-build \
                --tmpfs /tmp \
@@ -194,7 +198,7 @@ function ensure_build_container {
             get_rsync_addr
         fi
         if [[ ${DOCKER_CERT_PATH:-} ]]; then
-            tar -C "${DOCKER_CERT_PATH}" -c . | docker exec -i virtlet-build /bin/bash -c 'mkdir /docker-cert && tar -C /docker-cert -xv'
+            tar -C "${DOCKER_CERT_PATH}" -c . | docker exec -i virtlet-build /bin/bash -c 'mkdir /docker-cert && tar -C /docker-cert -x'
         fi
     fi
     if [[ ! ${VIRTLET_SKIP_RSYNC} ]]; then
@@ -208,14 +212,16 @@ function vsh {
     docker exec -it virtlet-build env TERM=xterm bash
 }
 
-function vcmd {
+function sync_source {
     ensure_build_container
     cd "${project_dir}"
     if [[ ! ${VIRTLET_SKIP_RSYNC} ]]; then
         local -a filters=(
-            --filter '- /vendor/'
             --filter '- /_output/'
         )
+        if [[ ${VIRTLET_SKIP_VENDOR:-false} != "true" ]]; then
+            filters+=(--filter '- /vendor/')
+        fi
         if [[ ! ${rsync_git} ]]; then
             filters+=(--filter '- /.git/')
         fi
@@ -224,7 +230,15 @@ function vcmd {
               -a --delete --compress-level=9 \
               "${project_dir}/" "rsync://virtlet@${RSYNC_ADDR}/virtlet/"
     fi
-    docker exec -i virtlet-build bash -c "$*"
+}
+
+function vcmd {
+    sync_source >&2
+    local t=""
+    if [[ ${USE_TERM:-} ]]; then
+        t="t"
+    fi
+    docker exec -i"${t}" virtlet-build bash -c "$*"
 }
 
 function vcmd_simple {
@@ -282,6 +296,9 @@ function prepare_node {
     fi
     ensure_build_container
     echo >&2 "Installing CRI proxy package in the node container (${node})..."
+    if [[ ${DIND_CRI:-} = containerd ]]; then
+        docker exec "${node}" /bin/bash -c 'echo criproxy-nodeps criproxy/primary_cri select containerd | debconf-set-selections'
+    fi
     docker exec "${node}" /bin/bash -c "curl -sSL '${CRIPROXY_DEB_URL}' >/criproxy.deb && dpkg -i /criproxy.deb && rm /criproxy.deb"
 
     docker exec "${node}" mount --make-shared /dind
@@ -294,9 +311,13 @@ function prepare_node {
             kubectl taint nodes kube-master node-role.kubernetes.io/master-
         fi
     fi
-    if [[ ${FORCE_UPDATE_IMAGE} ]] || ! docker exec "${node}" docker history -q mirantis/virtlet:latest >&/dev/null; then
+    if [[ ${FORCE_UPDATE_IMAGE} ]] || ! docker exec "${node}" docker history -q "${virtlet_image}:latest" >&/dev/null; then
         echo >&2 "Propagating Virtlet image to the node container..."
-        vcmd "docker save '${virtlet_image}' | docker exec -i '${node}' docker load"
+        if [[ ${DIND_CRI} = containerd ]]; then
+          vcmd "docker save '${virtlet_image}:latest' | docker exec -i '${node}' ctr -n k8s.io images import -"
+        else
+          vcmd "docker save '${virtlet_image}:latest' | docker exec -i '${node}' docker load"
+        fi
     fi
 }
 
@@ -500,21 +521,22 @@ function update_bindata_internal {
     go-bindata -mode 0644 -modtime "${bindata_modtime}" -o "${bindata_out}" -pkg "${bindata_pkg}" "${bindata_dir}"
 }
 
-function update_docs_internal {
+function update_generated_docs_internal {
   if [[ ! -f _output/virtletctl ]]; then
     echo >&2 "Please run build/cmd.sh build first"
   fi
-  _output/virtletctl gendoc docs/virtletctl
+  virtletctl gendoc docs/docs/reference
   tempfile="$(tempfile)"
   _output/virtletctl gendoc --config >"${tempfile}"
   sed -i "/<!-- begin -->/,/<!-- end -->/{
 //!d
 /begin/r ${tempfile}
-}" docs/config.md
+}" docs/docs/reference/config.md
   rm -f "${tempfile}"
 }
 
 function update_generated_internal {
+  install_vendor_internal
   vendor/k8s.io/code-generator/generate-groups.sh all \
     github.com/Mirantis/virtlet/pkg/client github.com/Mirantis/virtlet/pkg/api \
     virtlet.k8s:v1 \
@@ -524,6 +546,45 @@ function update_generated_internal {
        -name '*.go' \
        -exec sed -i 's@github\.com/mirantis/virtlet@github\.com/Mirantis/virtlet@g' \
        '{}' \;
+}
+
+function serve_docs_internal {
+    (cd docs && mkdocs serve -a "${MKDOCS_SERVE_ADDRESS}")
+}
+
+function build_docs_internal {
+    site_dir="$(mktemp -d)"
+    trap 'rm -rf "${site_dir}"' EXIT
+    # Use strict mode (-s) for mkdocs so that any broken links
+    # etc. are caught
+    (cd docs && mkdocs build -s -d "${site_dir}" >&2)
+    tar -C "${site_dir}" -c .
+}
+
+function build_docs {
+    cd "${project_dir}"
+    rm -rf _docs
+    git clone -b docs . _docs
+    local docs_hash="$(git ls-tree HEAD -- docs | awk '{print $3}')"
+    if [[ ! -e _docs/source_hash || ${docs_hash} != $(cat _docs/source_hash) ]]; then
+        echo >&2 "docs/ directory changed since the last doc build, rebuilding docs"
+    elif [[ $(git status --porcelain) ]]; then
+        echo >&2 "Source directory dirty, rebuilding docs"
+    else
+        echo >&2 "Docs unchanged, no need to rebuild"
+        return 0
+    fi
+    # clean up _docs except for .git and CNAME
+    find _docs -name .git -prune -o -type f \! -name CNAME -exec rm -f '{}' \;
+    vcmd "build/cmd.sh build-docs-internal" | tar -C _docs -xv
+    echo "${docs_hash}" > _docs/source_hash
+    (
+        cd _docs
+        git add .
+        git commit -m "Update generated docs [ci skip]"
+        # this pushes the changes into the local repo (not github!)
+        git push origin docs
+    )
 }
 
 function usage {
@@ -537,11 +598,14 @@ function usage {
     echo >&2 "  $0 stop"
     echo >&2 "  $0 clean"
     echo >&2 "  $0 update-bindata"
-    echo >&2 "  $0 update-docs"
+    echo >&2 "  $0 update-generated-docs"
     echo >&2 "  $0 gotest [TEST_ARGS...]"
     echo >&2 "  $0 gobuild [BUILD_ARGS...]"
     echo >&2 "  $0 run CMD..."
     echo >&2 "  $0 release TAG"
+    echo >&2 "  $0 serve-docs"
+    echo >&2 "  $0 build-docs"
+    echo >&2 "  $0 sync"
     exit 1
 }
 
@@ -601,13 +665,12 @@ case "${cmd}" in
     update-generated-internal)
         update_generated_internal
         ;;
-    update-docs)
-        vcmd "build/cmd.sh update-docs-internal"
-        rm -rf "${project_dir}/docs/virtletctl"
-        docker exec virtlet-build tar -C "${remote_project_dir}" -c docs/config.md docs/virtletctl | tar -C "${project_dir}" -xv
+    update-generated-docs)
+        vcmd "build/cmd.sh update-generated-docs-internal"
+        docker exec virtlet-build tar -C "${remote_project_dir}" -c docs/docs/reference/config.md docs/docs/reference/virtletctl.md | tar -C "${project_dir}" -xv
         ;;
-    update-docs-internal)
-        update_docs_internal
+    update-generated-docs-internal)
+        update_generated_docs_internal
         ;;
     run)
         vcmd "$*"
@@ -660,6 +723,21 @@ case "${cmd}" in
         ;;
     release-internal)
         release_internal "$@"
+        ;;
+    serve-docs-internal)
+        serve_docs_internal
+        ;;
+    serve-docs)
+        ( USE_TERM=1 vcmd "build/cmd.sh serve-docs-internal" )
+        ;;
+    build-docs-internal)
+        build_docs_internal
+        ;;
+    build-docs)
+        build_docs
+        ;;
+    sync)
+        sync_source
         ;;
     *)
         usage

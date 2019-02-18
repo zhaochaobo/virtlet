@@ -55,6 +55,7 @@ import (
 )
 
 const (
+	defaultMTU                  = 1500
 	tapInterfaceNameTemplate    = "tap%d"
 	containerBridgeNameTemplate = "br%d"
 	loopbackInterfaceName       = "lo"
@@ -704,6 +705,10 @@ func RecoverContainerSideNetwork(csn *network.ContainerSideNetwork, nsPath strin
 			bindDeviceToVFIO(devIdentifier)
 		} else {
 			ifaceType = network.InterfaceTypeTap
+			// It's OK if OpenTAP failed as the device is busy and used by running VM
+			if fo, err := OpenTAP(link.Attrs().Name); err == nil {
+				desc.Fo = fo
+			}
 		}
 		if desc.Type != ifaceType {
 			return fmt.Errorf("bad interface type for %q", desc.Name)

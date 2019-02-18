@@ -442,8 +442,19 @@ func (v *VirtletRuntimeService) UpdateRuntimeConfig(context.Context, *kubeapi.Up
 	return &kubeapi.UpdateRuntimeConfigResponse{}, nil
 }
 
-// UpdateContainerResources is a placeholder for an unimplemented CRI method.
-func (v *VirtletRuntimeService) UpdateContainerResources(context.Context, *kubeapi.UpdateContainerResourcesRequest) (*kubeapi.UpdateContainerResourcesResponse, error) {
+// UpdateContainerResources stores in domain on libvirt info about Cpuset
+// for container then looks for running emulator and tries to adjust its
+// current settings through cgroups
+func (v *VirtletRuntimeService) UpdateContainerResources(ctx context.Context, req *kubeapi.UpdateContainerResourcesRequest) (*kubeapi.UpdateContainerResourcesResponse, error) {
+	setByCgroup, err := v.virtTool.UpdateCpusetsForEmulatorProcess(req.GetContainerId(), req.GetLinux().CpusetCpus)
+	if err != nil {
+		return nil, err
+	}
+	if !setByCgroup {
+		if err = v.virtTool.UpdateCpusetsInContainerDefinition(req.GetContainerId(), req.GetLinux().CpusetCpus); err != nil {
+			return nil, err
+		}
+	}
 	return &kubeapi.UpdateContainerResourcesResponse{}, nil
 }
 

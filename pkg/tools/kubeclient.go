@@ -121,6 +121,9 @@ func ParsePortForwardOutput(out string, ports []*ForwardedPort) error {
 
 // KubeClient contains methods for interfacing with Kubernetes clusters.
 type KubeClient interface {
+	// GetNamesOfNodesMarkedForVirtlet returns a list of node names for nodes labeled
+	// with virtlet as an extra runtime.
+	GetNamesOfNodesMarkedForVirtlet() (nodeNames []string, err error)
 	// GetVirtletPodAndNodeNames returns a list of names of the
 	// virtlet pods present in the cluster and a list of
 	// corresponding node names that contain these pods.
@@ -131,6 +134,12 @@ type KubeClient interface {
 	// GetVMPodInfo returns then name of the virtlet pod and the vm container name for
 	// the specified VM pod.
 	GetVMPodInfo(podName string) (*VMPodInfo, error)
+	// CreatePod creates a pod.
+	CreatePod(pod *v1.Pod) (*v1.Pod, error)
+	// GetPod retrieves a pod definition from the apiserver.
+	GetPod(name, namespace string) (*v1.Pod, error)
+	// DeletePod removes the specified pod from the specified namespace.
+	DeletePod(pod, namespace string) error
 	// ExecInContainer given a pod, a container, a namespace and a command
 	// executes that command inside the pod's container returning stdout and stderr output
 	// as strings and an error if it has occurred.
@@ -238,6 +247,26 @@ func (c *RealKubeClient) setup() error {
 	return nil
 }
 
+// GetNamesOfNodesMarkedForVirtlet implements GetNamesOfNodesMarkedForVirtlet methor of KubeClient interface.
+func (c *RealKubeClient) GetNamesOfNodesMarkedForVirtlet() ([]string, error) {
+	if err := c.setup(); err != nil {
+		return nil, err
+	}
+	opts := meta_v1.ListOptions{
+		LabelSelector: "extraRuntime=virtlet",
+	}
+	nodes, err := c.client.CoreV1().Nodes().List(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	var nodeNames []string
+	for _, item := range nodes.Items {
+		nodeNames = append(nodeNames, item.Name)
+	}
+	return nodeNames, nil
+}
+
 func (c *RealKubeClient) getVirtletPodAndNodeNames(nodeName string) (podNames []string, nodeNames []string, err error) {
 	if err := c.setup(); err != nil {
 		return nil, nil, err
@@ -327,7 +356,25 @@ func (c *RealKubeClient) GetVMPodInfo(podName string) (*VMPodInfo, error) {
 	}, nil
 }
 
-// ExecInContainer implements ExecInContainer method of KubeClient interface
+// CreatePod implements CreatePod method of KubeClient interface.
+func (c *RealKubeClient) CreatePod(pod *v1.Pod) (*v1.Pod, error) {
+	if err := c.setup(); err != nil {
+		return nil, err
+	}
+	return c.client.CoreV1().Pods(pod.Namespace).Create(pod)
+}
+
+// GetPod implements GetPod method of KubeClient interface.
+func (c *RealKubeClient) GetPod(name, namespace string) (*v1.Pod, error) {
+	return c.client.CoreV1().Pods(namespace).Get(name, meta_v1.GetOptions{})
+}
+
+// DeletePod implements DeletePod method of KubeClient interface.
+func (c *RealKubeClient) DeletePod(name, namespace string) error {
+	return c.client.CoreV1().Pods(namespace).Delete(name, &meta_v1.DeleteOptions{})
+}
+
+// ExecInContainer implements ExecInContainer method of KubeClient interface.
 func (c *RealKubeClient) ExecInContainer(podName, containerName, namespace string, stdin io.Reader, stdout, stderr io.Writer, command []string) (int, error) {
 	if err := c.setup(); err != nil {
 		return 0, err

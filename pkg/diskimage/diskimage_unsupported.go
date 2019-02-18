@@ -1,7 +1,7 @@
 // +build !linux
 
 /*
-Copyright 2016 Mirantis
+Copyright 2019 Mirantis
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +22,22 @@ import (
 	"errors"
 )
 
+// FormatDisk is a stub for non-linux systems
 func FormatDisk(path string) error {
 	return errors.New("not implemented")
+}
+
+// Put is a stub for non-linux systems
+func Put(image string, files map[string][]byte) error {
+	return errors.New("not implemented")
+}
+
+// ListFiles is a stub for non-linux systems
+func ListFiles(imagePath, dir string) ([]string, error) {
+	return nil, errors.New("not implemented")
+}
+
+// Cat is a stub for non-linux systems
+func Cat(imagePath, filePath string) (string, error) {
+	return "", errors.New("not implemented")
 }

@@ -70,17 +70,17 @@ func (v *rootVolume) createVolume() (virt.StorageVolume, error) {
 		return nil, err
 	}
 
-        vols, err := storagePool.ListVolumes()
-        for n, v := range vols {
-            glog.Infof("createVolume  %d vols: %v err: %v", n, v.Name, err)
-        }
+	vols, err := storagePool.ListVolumes()
+	for n, v := range vols {
+		glog.Infof("createVolume  %d vols: %v err: %v", n, v.Name, err)
+	}
 
-        exist, err := storagePool.LookupVolumeByName(v.volumeName())
-        if err == nil {
-               return  exist, err
-        }
-        
-        glog.Infof("createVolume lookup %s err: %v", v.volumeName(), err)
+	exist, err := storagePool.LookupVolumeByName(v.volumeName())
+	if err == nil {
+		return exist, err
+	}
+
+	glog.Infof("createVolume lookup %s err: %v", v.volumeName(), err)
 
 	return storagePool.CreateStorageVol(&libvirtxml.StorageVolume{
 		Type: "file",
@@ -103,6 +103,8 @@ func (v *rootVolume) createVolume() (virt.StorageVolume, error) {
 	})
 }
 
+func (v *rootVolume) IsDisk() bool { return true }
+
 func (v *rootVolume) UUID() string { return "" }
 
 func (v *rootVolume) Setup() (*libvirtxml.DomainDisk, *libvirtxml.DomainFilesystem, error) {
@@ -110,9 +112,16 @@ func (v *rootVolume) Setup() (*libvirtxml.DomainDisk, *libvirtxml.DomainFilesyst
 	if err != nil {
 		return nil, nil, err
 	}
+
 	volPath, err := vol.Path()
 	if err != nil {
 		return nil, nil, fmt.Errorf("error getting root volume path: %v", err)
+	}
+
+	if len(v.config.ParsedAnnotations.InjectedFiles) > 0 {
+		if err := v.owner.StorageConnection().PutFiles(volPath, v.config.ParsedAnnotations.InjectedFiles); err != nil {
+			return nil, nil, fmt.Errorf("error adding files to rootfs: %v", err)
+		}
 	}
 
 	return &libvirtxml.DomainDisk{

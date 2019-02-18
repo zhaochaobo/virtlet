@@ -17,7 +17,7 @@ kubectl get pods -w
 kubectl attach -it cirros-vm
 ```
 4. As soon as the VM has booted, you can use
-[virtletctl tool](../docs/virtletctl/virtletctl.md) (available as part
+[virtletctl tool](../docs/virtletctl.md) (available as part
 of each Virtlet release on GitHub starting from Virtlet 1.0):
 
 ```bash
@@ -87,7 +87,7 @@ for testing, you can use this command to start the cluster with
 FEATURE_GATES="BlockVolume=true" \
     KUBELET_FEATURE_GATES="BlockVolume=true" \
     ENABLE_CEPH=1 \
-    ./dind-cluster-v1.11.sh up
+    ./dind-cluster-v1.12.sh up
 ```
 
 [ubuntu-vm-local-block-pv.yaml](ubuntu-vm-local-block-pv.yaml)
@@ -247,7 +247,7 @@ After the VM boots, we can log into it and create a file on the root
 filesystem:
 
 ```console
-$ virtletctl ssh cirros@cirros-vm-p -- -i examples/vmkey
+$ virtletctl ssh cirros@cirros-vm-pl -- -i examples/vmkey
 ...
 $ echo foo >bar.txt
 ```
@@ -261,7 +261,7 @@ kubectl apply -f examples/cirros-vm-persistent-rootfs-local.yaml
 After logging into the new VM pod, we see that the file is still
 there:
 ```console
-$ virtletctl ssh cirros@cirros-vm-p -- -i examples/vmkey
+$ virtletctl ssh cirros@cirros-vm-pl -- -i examples/vmkey
 ...
 $ cat bar.txt
 foo
@@ -280,4 +280,5 @@ kubectl apply -f examples/cirros-vm-persistent-rootfs-rbd.yaml
 ```
 
 After that, you can verify that the persistent rootfs indeed works
-using the same approach as with local PVs.
+using the same approach as with local PVs, but using name `cirros-vm-pr`
+in place of `cirros-vm-pl`.

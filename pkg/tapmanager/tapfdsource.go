@@ -17,8 +17,8 @@ limitations under the License.
 package tapmanager
 
 import (
-	"encoding/json"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -194,19 +194,19 @@ func (s *TapFDSource) GetFDs(key string, data []byte) ([]int, []byte, error) {
 			// don't fail in this case because there may be even no Calico
 			glog.Warningf("Calico detection/fix didn't work: %v", err)
 		}
-                // check net.IP is multicast  or network address
-                for _, r := range netConfig.IPs {
+		// check net.IP is multicast  or network address
+		for _, r := range netConfig.IPs {
 			// check network address
-                        ip := r.Address
-                        ipv4Addr, ipv4Net, _ := net.ParseCIDR(ip.String())
-                        ip1 := make(net.IP, len(ipv4Addr.To4()))
-                        binary.BigEndian.PutUint32(ip1, binary.BigEndian.Uint32(ipv4Addr.To4())|^binary.BigEndian.Uint32(net.IP(ipv4Net.Mask).To4()))
-                        if ipv4Addr.String() == ip1.String() || ipv4Addr.String() == ipv4Net.IP.String() {
-	                        glog.V(3).Infof("CNI got Boardcast or network ip address:\n%s", spew.Sdump(netConfig))
-	                	gotError = true
-                                return nil, fmt.Errorf("Got Boardcase or network ip address")
-                        }
-                }
+			ip := r.Address
+			ipv4Addr, ipv4Net, _ := net.ParseCIDR(ip.String())
+			ip1 := make(net.IP, len(ipv4Addr.To4()))
+			binary.BigEndian.PutUint32(ip1, binary.BigEndian.Uint32(ipv4Addr.To4())|^binary.BigEndian.Uint32(net.IP(ipv4Net.Mask).To4()))
+			if ipv4Addr.String() == ip1.String() || ipv4Addr.String() == ipv4Net.IP.String() {
+				glog.V(3).Infof("CNI got Boardcast or network ip address:\n%s", spew.Sdump(netConfig))
+				gotError = true
+				return nil, fmt.Errorf("Got Boardcase or network ip address")
+			}
+		}
 		glog.V(3).Infof("CNI Result after fix:\n%s", spew.Sdump(netConfig))
 
 		var err error
@@ -368,6 +368,47 @@ func (s *TapFDSource) Recover(key string, data []byte) error {
 		}
 		return csn, nil
 	})
+}
+
+// RetrieveFDs retrieve the FDs
+// It is only the case if VM exited but recover didn't populate the FDs
+func (s *TapFDSource) RetrieveFDs(key string) ([]int, error) {
+	var podNet *podNetwork
+	var fds []int
+	func() {
+		s.Lock()
+		defer s.Unlock()
+		podNet = s.fdMap[key]
+	}()
+	if podNet == nil {
+		return nil, fmt.Errorf("bad key %q to retrieve FDs", key)
+	}
+
+	netNSPath := cni.PodNetNSPath(podNet.pnd.PodID)
+	vmNS, err := ns.GetNS(netNSPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open network namespace at %q: %v", netNSPath, err)
+	}
+
+	if err := utils.CallInNetNSWithSysfsRemounted(vmNS, func(hostNS ns.NetNS) error {
+		allLinks, err := netlink.LinkList()
+		if err != nil {
+			return fmt.Errorf("error listing the links: %v", err)
+		}
+
+		return nettools.RecoverContainerSideNetwork(podNet.csn, netNSPath, allLinks, hostNS)
+	}); err != nil {
+		return nil, err
+	}
+
+	for _, ifDesc := range podNet.csn.Interfaces {
+		// Fail if not all succeeded
+		if ifDesc.Fo == nil {
+			return nil, fmt.Errorf("failed to open tap interface %q", ifDesc.Name)
+		}
+		fds = append(fds, int(ifDesc.Fo.Fd()))
+	}
+	return fds, nil
 }
 
 func (s *TapFDSource) setupNetNS(key string, pnd *PodNetworkDesc, initNet func(netNSPath string, allLinks []netlink.Link, hostNS ns.NetNS) (*network.ContainerSideNetwork, error)) error {

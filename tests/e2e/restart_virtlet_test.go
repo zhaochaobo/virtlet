@@ -30,15 +30,14 @@ import (
 
 var _ = Describe("Virtlet restart [Disruptive]", func() {
 	var (
-		vm    *framework.VMInterface
-		vmPod *framework.PodInterface
+		vm *framework.VMInterface
 	)
 
 	BeforeAll(func() {
 		vm = controller.VM("cirros-vm")
 		vm.CreateAndWait(VMOptions{}.ApplyDefaults(), time.Minute*5, nil)
 		var err error
-		vmPod, err = vm.Pod()
+		_, err = vm.Pod()
 		Expect(err).NotTo(HaveOccurred())
 
 		// restart virtlet before all tests
@@ -67,7 +66,6 @@ var _ = Describe("Virtlet restart [Disruptive]", func() {
 
 		By(fmt.Sprintf("Running command: kubectl logs -n %s %s", controller.Namespace(), vm.Name))
 		err := localExecutor.Run(nil, &stdout, &stdout, "kubectl", "-n", controller.Namespace(), "logs", vm.Name)
-		fmt.Sprintf(stdout.String())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(stdout.String()).Should(ContainSubstring("login as 'cirros' user."))
 

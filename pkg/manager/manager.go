@@ -26,6 +26,7 @@ import (
 
 	"github.com/Mirantis/virtlet/pkg/api/virtlet.k8s/v1"
 	"github.com/Mirantis/virtlet/pkg/diag"
+	"github.com/Mirantis/virtlet/pkg/fs"
 	"github.com/Mirantis/virtlet/pkg/image"
 	"github.com/Mirantis/virtlet/pkg/imagetranslation"
 	"github.com/Mirantis/virtlet/pkg/libvirttools"
@@ -61,7 +62,7 @@ type VirtletManager struct {
 
 // NewVirtletManager creates a new VirtletManager.
 func NewVirtletManager(config *v1.VirtletConfig, fdManager tapmanager.FDManager, clientCfg clientcmd.ClientConfig, diagSet *diag.Set) *VirtletManager {
-	return &VirtletManager{config: config, fdManager: fdManager, diagSet: diagSet}
+	return &VirtletManager{config: config, fdManager: fdManager, diagSet: diagSet, clientCfg: clientCfg}
 }
 
 // Run sets up the environment for the runtime and image services and
@@ -134,13 +135,15 @@ func (v *VirtletManager) Run() error {
 		virtConfig.StreamerSocketPath = streamerSocketPath
 	}
 
-        mpc, err := utils.NewMountPointChecker()
-        if err != nil {
-                return fmt.Errorf("couldn't create mountpoint checker: %v", err)
-        }
+	mpc, err := utils.NewMountPointChecker()
+	if err != nil {
+		return fmt.Errorf("couldn't create mountpoint checker: %v", err)
+	}
 
 	volSrc := libvirttools.GetDefaultVolumeSource()
-        v.virtTool = libvirttools.NewVirtualizationTool(conn, conn, v.imageStore, v.metadataStore, volSrc, virtConfig, utils.NewMounter(), mpc, utils.DefaultCommander)
+	v.virtTool = libvirttools.NewVirtualizationTool(
+		conn, conn, v.imageStore, v.metadataStore, volSrc, mpc, virtConfig,
+		fs.RealFileSystem, utils.DefaultCommander)
 
 	runtimeService := NewVirtletRuntimeService(v.virtTool, v.metadataStore, v.fdManager, streamServer, v.imageStore, nil)
 	imageService := NewVirtletImageService(v.imageStore, translator, nil)
@@ -148,10 +151,10 @@ func (v *VirtletManager) Run() error {
 	v.server = NewServer()
 	v.server.Register(runtimeService, imageService)
 
-//	if err := v.recoverAndGC(); err != nil {
-		// we consider recover / gc errors non-fatal
-//		glog.Warning(err)
-//	}
+	//	if err := v.recoverAndGC(); err != nil {
+	// we consider recover / gc errors non-fatal
+	//		glog.Warning(err)
+	//	}
 
 	glog.V(1).Infof("Starting server on socket %s", *v.config.CRISocketPath)
 	if err = v.server.Serve(*v.config.CRISocketPath); err != nil {
@@ -173,13 +176,14 @@ func (v *VirtletManager) Stop() {
 // garbage collection for both libvirt and the image store.
 func (v *VirtletManager) recoverAndGC() error {
 	var errors []string
-	for _, err := range v.recoverNetworkNamespaces() {
-		errors = append(errors, fmt.Sprintf("* error recovering VM network namespaces: %v", err))
-                //return err
-	}
 
 	for _, err := range v.virtTool.GarbageCollect() {
 		errors = append(errors, fmt.Sprintf("* error performing libvirt GC: %v", err))
+	}
+
+	// recover network namespace after VM GC
+	for _, err := range v.recoverNetworkNamespaces() {
+		errors = append(errors, fmt.Sprintf("* error recovering VM network namespaces: %v", err))
 	}
 
 	if err := v.imageStore.GC(); err != nil {
@@ -212,6 +216,10 @@ OUTER:
 		}
 		if psi == nil {
 			allErrors = append(allErrors, fmt.Errorf("inconsistent database. Found pod %q sandbox but can not retrive its metadata", s.GetID()))
+			continue
+		}
+		// Don't recover if sandbox is not ready
+		if psi.State != types.PodSandboxState_SANDBOX_READY {
 			continue
 		}
 

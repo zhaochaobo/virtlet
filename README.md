@@ -2,9 +2,13 @@
 
 Virtlet is a Kubernetes runtime server which allows you to run VM workloads, based on QCOW2 images.
 
-It is possible to run Virtlet by following the instructions from either [Running local environment](docs/devel/running-local-environment.md) or [Deploy using DaemonSets](deploy/README.md) documents. There's also [separate document](deploy/real-cluster.md) describing the process of installing Virtlet on real clusters.
+It is possible to run Virtlet by following the instructions from either [Setting up the environment](https://docs.virtlet.cloud/dev/setup/) or [Deploying Virtlet as a DaemonSet on kubeadm-dind-cluster](https://docs.virtlet.cloud/user-guide/virtlet-on-kdc/) documents. There's also [separate document](https://docs.virtlet.cloud/user-guide/real-cluster/) describing the process of installing Virtlet on real clusters.
 
-[See here](docs/architecture.md) for the description of Virtlet architecture.
+[See here](https://docs.virtlet.cloud/dev/architecture/) for the description of Virtlet architecture.
+
+## Description & Documentation
+
+[See here](https://docs.virtlet.cloud) for user-facing Virtlet description and documentation.
 
 ## Community
 
@@ -16,7 +20,7 @@ users and developers are welcome!
 
 ## Getting started with Virtlet
 
-To try out Virtlet follow the instructions from [Running local environment](docs/devel/running-local-environment.md) and [try out examples](examples/README.md) documents.
+To try out Virtlet follow the instructions from [Setting up the environment](https://docs.virtlet.cloud/dev/setup/) and [try out examples](examples/README.md) documents.
 
 ### Virtlet introduction video
 
@@ -25,8 +29,8 @@ You can watch and listen to Virtlet demo video that was recorded on Kubernetes C
 ### Command line interface
 
 Virtlet comes with a helper tool,
-[virtletctl](docs/virtletctl/virtletctl.md), that helps managing the VM pods. The binaries are available for Linux and Mac OS X in the [Releases](https://github.com/Mirantis/virtlet/releases) section.
-If you're using Kubernetes 1.9, you can install virtletctl as a kubectl plugin:
+[virtletctl](https://docs.virtlet.cloud/reference/virtletctl/), that helps managing the VM pods. The binaries are available for Linux and Mac OS X in the [Releases](https://github.com/Mirantis/virtlet/releases) section.
+You can also install virtletctl as a kubectl plugin:
 ```
 virtletctl install
 ```
@@ -69,7 +73,7 @@ The demo script will check for KVM support on the host and will make Virtlet use
 
 The demo is based on [kubeadm-dind-cluster](https://github.com/kubernetes-sigs/kubeadm-dind-cluster) project. **Docker btrfs storage driver is currently unsupported.** Please refer to `kubeadm-dind-cluster` documentation for more info.
 
-You can remove the test cluster with `./dind-cluster-v1.9.sh clean` when you no longer need it.
+You can remove the test cluster with `./dind-cluster-v1.12.sh clean` when you no longer need it.
 
 ## External projects using Virtlet
 There are some external projects using Virtlet already.

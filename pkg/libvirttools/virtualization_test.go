@@ -1,5 +1,5 @@
 /*
-Copyright 2016-2017 Mirantis
+Copyright 2016-2019 Mirantis
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,8 +27,14 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	v1 "k8s.io/api/core/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	fakekube "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/Mirantis/virtlet/pkg/flexvolume"
+	"github.com/Mirantis/virtlet/pkg/fs"
+	fakefs "github.com/Mirantis/virtlet/pkg/fs/fake"
 	"github.com/Mirantis/virtlet/pkg/metadata"
 	fakemeta "github.com/Mirantis/virtlet/pkg/metadata/fake"
 	"github.com/Mirantis/virtlet/pkg/metadata/types"
@@ -60,7 +66,7 @@ type containerTester struct {
 	metadataStore  metadata.Store
 }
 
-func newContainerTester(t *testing.T, rec *testutils.TopLevelRecorder, cmds []fakeutils.CmdSpec) *containerTester {
+func newContainerTester(t *testing.T, rec *testutils.TopLevelRecorder, cmds []fakeutils.CmdSpec, files map[string]string) *containerTester {
 	ct := &containerTester{
 		t:     t,
 		clock: clockwork.NewFakeClockAt(time.Date(2017, 5, 30, 20, 19, 0, 0, time.UTC)),
@@ -85,18 +91,24 @@ func newContainerTester(t *testing.T, rec *testutils.TopLevelRecorder, cmds []fa
 	}
 
 	imageManager := newFakeImageManager(ct.rec)
-	ct.kubeletRootDir = filepath.Join(ct.tmpDir, "kubelet-root")
+	ct.kubeletRootDir = filepath.Join(ct.tmpDir, "__fs__/kubelet-root")
+	mountDir := filepath.Join(ct.tmpDir, "__fs__/mounts")
 	virtConfig := VirtualizationConfig{
-		VolumePoolName:     "volumes",
-		RawDevices:         []string{"loop*"},
-		KubeletRootDir:     ct.kubeletRootDir,
-		StreamerSocketPath: "/var/lib/libvirt/streamer.sock",
+		VolumePoolName:       "volumes",
+		RawDevices:           []string{"loop*"},
+		KubeletRootDir:       ct.kubeletRootDir,
+		StreamerSocketPath:   "/var/lib/libvirt/streamer.sock",
+		SharedFilesystemPath: mountDir,
 	}
 	fakeCommander := fakeutils.NewCommander(rec, cmds)
 	fakeCommander.ReplaceTempPath("__pods__", "/fakedev")
+
+	fs := fakefs.NewFakeFileSystem(t, rec, mountDir, files)
+
 	ct.virtTool = NewVirtualizationTool(
 		ct.domainConn, ct.storageConn, imageManager, ct.metadataStore,
-		GetDefaultVolumeSource(), virtConfig, utils.NullMounter, fakeCommander)
+		GetDefaultVolumeSource(), virtConfig, fs,
+		fakeCommander)
 	ct.virtTool.SetClock(ct.clock)
 
 	return ct
@@ -186,7 +198,7 @@ func (ct *containerTester) verifyContainerRootfsExists(containerInfo *types.Cont
 }
 
 func TestContainerLifecycle(t *testing.T) {
-	ct := newContainerTester(t, testutils.NewToplevelRecorder(), nil)
+	ct := newContainerTester(t, testutils.NewToplevelRecorder(), nil, nil)
 	defer ct.teardown()
 
 	sandbox := fakemeta.GetSandboxes(1)[0]
@@ -268,7 +280,7 @@ func TestContainerLifecycle(t *testing.T) {
 }
 
 func TestDomainForcedShutdown(t *testing.T) {
-	ct := newContainerTester(t, testutils.NewToplevelRecorder(), nil)
+	ct := newContainerTester(t, testutils.NewToplevelRecorder(), nil, nil)
 	defer ct.teardown()
 
 	sandbox := fakemeta.GetSandboxes(1)[0]
@@ -303,7 +315,7 @@ func TestDomainForcedShutdown(t *testing.T) {
 }
 
 func TestDoubleStartError(t *testing.T) {
-	ct := newContainerTester(t, testutils.NewToplevelRecorder(), nil)
+	ct := newContainerTester(t, testutils.NewToplevelRecorder(), nil, nil)
 	defer ct.teardown()
 
 	sandbox := fakemeta.GetSandboxes(1)[0]
@@ -320,6 +332,7 @@ func TestDoubleStartError(t *testing.T) {
 type volMount struct {
 	name          string
 	containerPath string
+	podSubpath    string
 }
 
 type volDevice struct {
@@ -329,10 +342,10 @@ type volDevice struct {
 }
 
 func TestDomainDefinitions(t *testing.T) {
-	flexVolumeDriver := flexvolume.NewFlexVolumeDriver(func() string {
+	flexVolumeDriver := flexvolume.NewDriver(func() string {
 		// note that this is only good for just one flexvolume
 		return fakeUUID
-	}, utils.NullMounter)
+	}, fs.NullFileSystem)
 	for _, tc := range []struct {
 		name        string
 		annotations map[string]string
@@ -340,9 +353,16 @@ func TestDomainDefinitions(t *testing.T) {
 		mounts      []volMount
 		volDevs     []volDevice
 		cmds        []fakeutils.CmdSpec
+		objects     []runtime.Object
 	}{
 		{
 			name: "plain domain",
+		},
+		{
+			name: "system UUID",
+			annotations: map[string]string{
+				"VirtletSystemUUID": "53008994-44c0-4017-ad44-9c49758083da",
+			},
 		},
 		{
 			name: "raw devices",
@@ -392,6 +412,7 @@ func TestDomainDefinitions(t *testing.T) {
 				{
 					name:          "ceph",
 					containerPath: "/var/lib/whatever",
+					podSubpath:    "volumes/virtlet~flexvolume_driver",
 				},
 			},
 		},
@@ -450,11 +471,80 @@ func TestDomainDefinitions(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "9pfs volume",
+			mounts: []volMount{
+				{
+					name:          "9pfs-vol",
+					containerPath: "/var/lib/foobar",
+					podSubpath:    "volumes/kubernetes.io~rbd",
+				},
+			},
+		},
+		{
+			name: "file injection",
+			annotations: map[string]string{
+				"VirtletFilesFromDataSource": "secret/data",
+			},
+			objects: []runtime.Object{
+				&v1.Secret{
+					ObjectMeta: meta_v1.ObjectMeta{
+						Name:      "data",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"path_to_file_path": []byte("/path/to_file"),
+						"path_to_file":      []byte("Y29udGVudA=="),
+					},
+				},
+			},
+		},
+		{
+			name: "file injection on persistent rootfs",
+			annotations: map[string]string{
+				"VirtletFilesFromDataSource": "secret/data",
+			},
+			volDevs: []volDevice{
+				{
+					name:       "root",
+					devicePath: "/",
+					size:       512000,
+				},
+			},
+			objects: []runtime.Object{
+				&v1.Secret{
+					ObjectMeta: meta_v1.ObjectMeta{
+						Name:      "data",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"path_to_file_path": []byte("/path/to_file"),
+						"path_to_file":      []byte("Y29udGVudA=="),
+					},
+				},
+			},
+			cmds: []fakeutils.CmdSpec{
+				{
+					Match:  "blockdev --getsz",
+					Stdout: "1000",
+				},
+				{
+					Match: "qemu-img convert",
+				},
+				{
+					Match: "dmsetup create",
+				},
+				{
+					Match: "dmsetup remove",
+				},
+			},
+		},
+		// TODO: add test cases for rootfs / persistent rootfs file injection
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := testutils.NewToplevelRecorder()
 
-			ct := newContainerTester(t, rec, tc.cmds)
+			ct := newContainerTester(t, rec, tc.cmds, nil)
 			defer ct.teardown()
 
 			sandbox := fakemeta.GetSandboxes(1)[0]
@@ -477,7 +567,7 @@ func TestDomainDefinitions(t *testing.T) {
 			var mounts []types.VMMount
 			for _, m := range tc.mounts {
 				mounts = append(mounts, types.VMMount{
-					HostPath:      filepath.Join(ct.kubeletRootDir, sandbox.Uid, "volumes/virtlet~flexvolume_driver", m.name),
+					HostPath:      filepath.Join(ct.kubeletRootDir, sandbox.Uid, m.podSubpath, m.name),
 					ContainerPath: m.containerPath,
 				})
 			}
@@ -508,12 +598,19 @@ func TestDomainDefinitions(t *testing.T) {
 				})
 			}
 
+			oldLoader := types.GetExternalDataLoader()
+			if tc.objects != nil {
+				fc := fakekube.NewSimpleClientset(tc.objects...)
+				types.SetExternalDataLoader(&defaultExternalDataLoader{kubeClient: fc})
+			}
+
 			containerID := ct.createContainer(sandbox, mounts, volDevs)
 
 			// startContainer will cause fake Domain
 			// to dump the cloudinit iso content
 			ct.startContainer(containerID)
 			ct.removeContainer(containerID)
+			types.SetExternalDataLoader(oldLoader)
 			gm.Verify(t, gm.NewYamlVerifier(ct.rec.Content()))
 		})
 	}
@@ -528,7 +625,7 @@ func TestDomainResourceConstraints(t *testing.T) {
 
 	rec := testutils.NewToplevelRecorder()
 	rec.AddFilter("DefineDomain")
-	ct := newContainerTester(t, rec, nil)
+	ct := newContainerTester(t, rec, nil, nil)
 	defer ct.teardown()
 	sandbox := fakemeta.GetSandboxes(1)[0]
 	sandbox.Annotations = map[string]string{

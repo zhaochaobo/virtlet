@@ -38,6 +38,8 @@ import (
 
 	"github.com/Mirantis/virtlet/pkg/cni"
 	"github.com/Mirantis/virtlet/pkg/flexvolume"
+	"github.com/Mirantis/virtlet/pkg/fs"
+	fakefs "github.com/Mirantis/virtlet/pkg/fs/fake"
 	"github.com/Mirantis/virtlet/pkg/image"
 	fakeimage "github.com/Mirantis/virtlet/pkg/image/fake"
 	"github.com/Mirantis/virtlet/pkg/libvirttools"
@@ -238,7 +240,10 @@ func makeVirtletCRITester(t *testing.T) *virtletCRITester {
 		StreamerSocketPath: streamerSocketPath,
 	}
 	commander := fakeutils.NewCommander(rec, nil)
-	virtTool := libvirttools.NewVirtualizationTool(domainConn, storageConn, imageStore, metadataStore, libvirttools.GetDefaultVolumeSource(), virtConfig, utils.NullMounter, commander)
+	virtTool := libvirttools.NewVirtualizationTool(
+		domainConn, storageConn, imageStore, metadataStore,
+		libvirttools.GetDefaultVolumeSource(), virtConfig,
+		fakefs.NewFakeFileSystem(t, rec, "", nil), commander)
 	virtTool.SetClock(clock)
 	streamServer := newFakeStreamServer(rec.Child("streamServer"))
 	criHandler := &criHandler{
@@ -283,17 +288,16 @@ func (tst *virtletCRITester) invoke(name string, req interface{}, failOnError bo
 			}
 		}
 		return nil, err
-	} else {
-		resp := vals[0].Interface()
-		tst.rec.Rec("leave: "+name, resp)
-		return resp, nil
 	}
+	resp := vals[0].Interface()
+	tst.rec.Rec("leave: "+name, resp)
+	return resp, nil
 }
 
 func (tst *virtletCRITester) getSampleFlexvolMounts(podSandboxID string) []*kubeapi.Mount {
-	flexVolumeDriver := flexvolume.NewFlexVolumeDriver(func() string {
+	flexVolumeDriver := flexvolume.NewDriver(func() string {
 		return "abb67e3c-71b3-4ddd-5505-8c4215d5c4eb"
-	}, utils.NullMounter)
+	}, fs.NullFileSystem)
 	flexVolDir := filepath.Join(tst.kubeletRootDir, podSandboxID, "volumes/virtlet~flexvolume_driver", "vol1")
 	flexVolDef := map[string]interface{}{
 		"type":     "qcow2",
@@ -385,10 +389,9 @@ func (tst *virtletCRITester) createContainer(sandbox *kubeapi.PodSandboxConfig, 
 	}
 	if r, ok := resp.(*kubeapi.CreateContainerResponse); ok {
 		return r.ContainerId
-	} else {
-		tst.t.Fatalf("bad value returned by CreateContainer: %#v", resp)
-		return "" // unreachable
 	}
+	tst.t.Fatalf("bad value returned by CreateContainer: %#v", resp)
+	return "" // unreachable
 }
 
 func (tst *virtletCRITester) containerStatus(containerID string) {
@@ -405,6 +408,13 @@ func (tst *virtletCRITester) stopContainer(containerID string) {
 
 func (tst *virtletCRITester) containerStats(containerID string) {
 	tst.invoke("ContainerStats", &kubeapi.ContainerStatsRequest{ContainerId: containerID}, true)
+}
+
+func (tst *virtletCRITester) updateContainerResources(containerID, cpuSet string) {
+	tst.invoke("UpdateContainerResources", &kubeapi.UpdateContainerResourcesRequest{
+		ContainerId: containerID,
+		Linux:       &kubeapi.LinuxContainerResources{CpusetCpus: cpuSet},
+	}, true)
 }
 
 func (tst *virtletCRITester) removeContainer(containerID string) {
@@ -700,6 +710,27 @@ func TestCRIAttachPortForward(t *testing.T) {
 		PodSandboxId: sandboxes[0].Metadata.Uid,
 		Port:         []int32{42000},
 	})
+
+	tst.verify()
+}
+
+func TestUpdateResources(t *testing.T) {
+	tst := makeVirtletCRITester(t)
+	tst.rec.AddFilter("UpdateContainerResources")
+	tst.rec.AddFilter("DefineDomain")
+	tst.rec.AddFilter("Undefine")
+	defer tst.teardown()
+
+	sandboxes := criapi.GetSandboxes(1)
+	containers := criapi.GetContainersConfig(sandboxes)
+
+	tst.pullImage(cirrosImg())
+	tst.runPodSandbox(sandboxes[0])
+	tst.podSandboxStatus(sandboxes[0].Metadata.Uid)
+
+	containerId1 := tst.createContainer(sandboxes[0], containers[0], cirrosImg(), nil)
+
+	tst.updateContainerResources(containerId1, "42")
 
 	tst.verify()
 }

@@ -75,9 +75,8 @@ func (sc *FakeStorageConnection) CreateStoragePool(def *libvirtxml.StoragePool) 
 func (sc *FakeStorageConnection) LookupStoragePoolByName(name string) (virt.StoragePool, error) {
 	if p, found := sc.pools[name]; found {
 		return p, nil
-	} else {
-		return nil, virt.ErrStoragePoolNotFound
 	}
+	return nil, virt.ErrStoragePoolNotFound
 }
 
 // ListPools implements ListPools method of StorageConnection interface.
@@ -92,6 +91,19 @@ func (sc *FakeStorageConnection) ListPools() ([]virt.StoragePool, error) {
 		r[n] = sc.pools[name]
 	}
 	return r, nil
+}
+
+// PutFiles implements PutFiles method of StorageConnection interface.
+func (sc *FakeStorageConnection) PutFiles(imagePath string, files map[string][]byte) error {
+	fileStrs := make(map[string]string)
+	for filename, content := range files {
+		fileStrs[filename] = string(content)
+	}
+	sc.rec.Rec("PutFiles", map[string]interface{}{
+		"imagePath": fixPath(imagePath),
+		"files":     fileStrs,
+	})
+	return nil
 }
 
 // FakeStoragePool is a fake implementation of StoragePool interface.

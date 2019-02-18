@@ -43,6 +43,8 @@ type StorageConnection interface {
 	LookupStoragePoolByName(name string) (StoragePool, error)
 	// ListPools() retrieves the list of pools
 	ListPools() ([]StoragePool, error)
+	// PutFiles add files to the specified image.
+	PutFiles(imagePath string, files map[string][]byte) error
 }
 
 // StoragePool represents a pool of volumes
@@ -60,8 +62,8 @@ type StoragePool interface {
 	RemoveVolumeByName(name string) error
 	// XML retrieves xml definition of the pool
 	XML() (*libvirtxml.StoragePool, error)
-        // Fresh current pool
-        Refresh() error
+	// Fresh current pool
+	Refresh() error
 }
 
 // StorageVolume represents a particular volume in pool

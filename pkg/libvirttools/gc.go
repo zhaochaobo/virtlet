@@ -22,8 +22,10 @@ import (
 	"path/filepath"
 	"strings"
 
-        "github.com/golang/glog"
 	"github.com/Mirantis/virtlet/pkg/blockdev"
+	"github.com/Mirantis/virtlet/pkg/metadata"
+	"github.com/Mirantis/virtlet/pkg/metadata/types"
+	"github.com/golang/glog"
 )
 
 const (
@@ -38,11 +40,11 @@ func (v *VirtualizationTool) GarbageCollect() (allErrors []error) {
 	if errors != nil {
 		allErrors = append(allErrors, errors...)
 	}
-        // skip garbage collect
+	// skip garbage collect
 	if fatal {
 		return
 	}
-        glog.Infof("GC ids: %v", ids)
+	glog.Infof("GC ids: %v", ids)
 	allErrors = append(allErrors, v.removeOrphanDomains(ids)...)
 	allErrors = append(allErrors, v.removeOrphanRootVolumes(ids)...)
 	allErrors = append(allErrors, v.removeOrphanQcow2Volumes(ids)...)
@@ -64,6 +66,11 @@ func (v *VirtualizationTool) retrieveListOfContainerIDs() ([]string, bool, []err
 
 	var allErrors []error
 	for _, sandbox := range sandboxes {
+		if err := v.checkSandboxNetNs(sandbox); err != nil {
+			allErrors = append(allErrors, err)
+			continue
+		}
+
 		containers, err := v.metadataStore.ListPodContainers(sandbox.GetID())
 		if err != nil {
 			allErrors = append(
@@ -82,6 +89,27 @@ func (v *VirtualizationTool) retrieveListOfContainerIDs() ([]string, bool, []err
 	}
 
 	return containerIDs, false, allErrors
+}
+
+func (v *VirtualizationTool) checkSandboxNetNs(sandbox metadata.PodSandboxMetadata) error {
+	sinfo, err := sandbox.Retrieve()
+	if err != nil {
+		return err
+	}
+
+	if !v.fsys.IsPathAnNs(sinfo.ContainerSideNetwork.NsPath) {
+		// NS didn't found, need RunSandbox again
+		if err := sandbox.Save(func(s *types.PodSandboxInfo) (*types.PodSandboxInfo, error) {
+			if s != nil {
+				s.State = types.PodSandboxState_SANDBOX_NOTREADY
+			}
+			return s, nil
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func inList(list []string, filter func(string) bool) bool {

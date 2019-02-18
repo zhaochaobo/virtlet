@@ -131,9 +131,11 @@
         CPUModel: ""
         CPUSetting: null
         DiskDriver: scsi
+        InjectedFiles: null
         MetaData: null
         RootVolumeSize: 0
         SSHKeys: null
+        SystemUUID: null
         UserData: null
         UserDataOverwrite: false
         UserDataScript: ""

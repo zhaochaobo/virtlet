@@ -25,10 +25,12 @@ import (
 	"github.com/golang/glog"
 	"github.com/jonboulle/clockwork"
 	libvirtxml "github.com/libvirt/libvirt-go-xml"
+	uuid "github.com/nu7hatch/gouuid"
 	"k8s.io/apimachinery/pkg/fields"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 
 	vconfig "github.com/Mirantis/virtlet/pkg/config"
+	"github.com/Mirantis/virtlet/pkg/fs"
 	"github.com/Mirantis/virtlet/pkg/metadata"
 	"github.com/Mirantis/virtlet/pkg/metadata/types"
 	"github.com/Mirantis/virtlet/pkg/utils"
@@ -77,6 +79,7 @@ type domainSettings struct {
 	netFdKey         string
 	enableSriov      bool
 	cpuModel         string
+	systemUUID       *uuid.UUID
 }
 
 func (ds *domainSettings) createDomain(config *types.VMConfig) *libvirtxml.Domain {
@@ -95,7 +98,7 @@ func (ds *domainSettings) createDomain(config *types.VMConfig) *libvirtxml.Domai
 				{Type: "tablet", Bus: "usb"},
 			},
 			Graphics: []libvirtxml.DomainGraphic{
-                                {VNC: &libvirtxml.DomainGraphicVNC{Port: -1, WebSocket: -1, Listen: "0.0.0.0"}},
+				{VNC: &libvirtxml.DomainGraphicVNC{Port: -1, WebSocket: -1, Listen: "0.0.0.0"}},
 			},
 			Videos: []libvirtxml.DomainVideo{
 				{Model: libvirtxml.DomainVideoModel{Type: "cirrus"}},
@@ -181,6 +184,20 @@ func (ds *domainSettings) createDomain(config *types.VMConfig) *libvirtxml.Domai
 		}
 	}
 
+	if ds.systemUUID != nil {
+		domain.SysInfo = &libvirtxml.DomainSysInfo{
+			Type: "smbios",
+			System: &libvirtxml.DomainSysInfoSystem{
+				Entry: []libvirtxml.DomainSysInfoEntry{
+					{
+						Name:  "uuid",
+						Value: ds.systemUUID.String(),
+					},
+				},
+			},
+		}
+	}
+
 	if ds.enableSriov {
 		domain.QEMUCommandline.Envs = append(domain.QEMUCommandline.Envs,
 			libvirtxml.DomainQEMUCommandlineEnv{Name: "VMWRAPPER_KEEP_PRIVS", Value: "1"})
@@ -226,7 +243,7 @@ type VirtualizationTool struct {
 	clock             clockwork.Clock
 	volumeSource      VMVolumeSource
 	config            VirtualizationConfig
-	mounter           utils.Mounter
+	fsys              fs.FileSystem
 	mountPointChecker utils.MountPointChecker
 	commander         utils.Commander
 }
@@ -238,8 +255,8 @@ var _ volumeOwner = &VirtualizationTool{}
 func NewVirtualizationTool(domainConn virt.DomainConnection,
 	storageConn virt.StorageConnection, imageManager ImageManager,
 	metadataStore metadata.Store, volumeSource VMVolumeSource,
-	config VirtualizationConfig, mounter utils.Mounter,
 	mountPointChecker utils.MountPointChecker,
+	config VirtualizationConfig, fsys fs.FileSystem,
 	commander utils.Commander) *VirtualizationTool {
 	return &VirtualizationTool{
 		domainConn:        domainConn,
@@ -249,7 +266,7 @@ func NewVirtualizationTool(domainConn virt.DomainConnection,
 		clock:             clockwork.NewRealClock(),
 		volumeSource:      volumeSource,
 		config:            config,
-		mounter:           mounter,
+		fsys:              fsys,
 		mountPointChecker: mountPointChecker,
 		commander:         commander,
 	}
@@ -302,7 +319,12 @@ func (v *VirtualizationTool) CreateContainer(config *types.VMConfig, netFdKey st
 		return "", err
 	}
 
-	domainUUID := utils.NewUUID5(ContainerNsUUID, config.PodSandboxID)
+	var domainUUID string
+	if config.ParsedAnnotations.SystemUUID != nil {
+		domainUUID = config.ParsedAnnotations.SystemUUID.String()
+	} else {
+		domainUUID = utils.NewUUID5(ContainerNsUUID, config.PodSandboxID)
+	}
 	// FIXME: this field should be moved to VMStatus struct (to be added)
 	config.DomainUUID = domainUUID
 	cpuModel := v.config.CPUModel
@@ -328,6 +350,7 @@ func (v *VirtualizationTool) CreateContainer(config *types.VMConfig, netFdKey st
 		memoryUnit: "b",
 		useKvm:     !v.config.DisableKVM,
 		cpuModel:   cpuModel,
+		systemUUID: config.ParsedAnnotations.SystemUUID,
 	}
 	if settings.memory == 0 {
 		settings.memory = defaultMemory
@@ -447,20 +470,7 @@ func (v *VirtualizationTool) startContainer(containerID string) error {
 // If there was an error it will be returned to caller after an domain removal
 // attempt.  If also it had an error - both of them will be combined.
 func (v *VirtualizationTool) StartContainer(containerID string) error {
-	if err := v.startContainer(containerID); err != nil {
-		// FIXME: we do this here because kubelet may attempt new `CreateContainer()`
-		// calls for this VM after failed `StartContainer()` without first removing it.
-		// Better solution is perhaps moving domain setup logic to `StartContainer()`
-		// and cleaning it all up upon failure, but for now we just remove the VM
-		// so the next `CreateContainer()` call succeeds.
-		if rmErr := v.RemoveContainer(containerID); rmErr != nil {
-			return fmt.Errorf("container start error: %v \n+ container removal error: %v", err, rmErr)
-		}
-
-		return err
-	}
-
-	return nil
+	return v.startContainer(containerID)
 }
 
 // StopContainer calls graceful shutdown of domain and if it was non successful
@@ -818,43 +828,6 @@ func (v *VirtualizationTool) ContainerInfo(containerID string) (*types.Container
 	return containerInfo, nil
 }
 
-// UpdateCpusetsInContainerDefinition updates domain definition in libvirt for the VM
-// setting environment variable for vmwrapper with info about to which cpuset it should
-// pin itself
-func (v *VirtualizationTool) UpdateCpusetsInContainerDefinition(containerID, cpusets string) error {
-	domain, err := v.domainConn.LookupDomainByUUIDString(containerID)
-	if err != nil {
-		return err
-	}
-
-	domainxml, err := domain.XML()
-	if err != nil {
-		return err
-	}
-
-	found := false
-	envvars := domainxml.QEMUCommandline.Envs
-	for _, envvar := range envvars {
-		if envvar.Name == vconfig.CpusetsEnvVarName {
-			envvar.Value = cpusets
-			found = true
-		}
-	}
-	if !found && cpusets != "" {
-		domainxml.QEMUCommandline.Envs = append(envvars, libvirtxml.DomainQEMUCommandlineEnv{
-			Name:  vconfig.CpusetsEnvVarName,
-			Value: cpusets,
-		})
-	}
-
-	if err := domain.Undefine(); err != nil {
-		return err
-	}
-
-	_, err = v.domainConn.DefineDomain(domainxml)
-	return err
-}
-
 // VMStats returns current cpu/memory/disk usage for VM
 func (v *VirtualizationTool) VMStats(containerID string, name string) (*types.VMStats, error) {
 	domain, err := v.domainConn.LookupDomainByUUIDString(containerID)
@@ -954,6 +927,9 @@ func (v *VirtualizationTool) StoragePool() (virt.StoragePool, error) {
 // DomainConnection implements volumeOwner DomainConnection method
 func (v *VirtualizationTool) DomainConnection() virt.DomainConnection { return v.domainConn }
 
+// StorageConnection implements volumeOwner StorageConnection method
+func (v *VirtualizationTool) StorageConnection() virt.StorageConnection { return v.storageConn }
+
 // ImageManager implements volumeOwner ImageManager method
 func (v *VirtualizationTool) ImageManager() ImageManager { return v.imageManager }
 
@@ -966,8 +942,8 @@ func (v *VirtualizationTool) KubeletRootDir() string { return v.config.KubeletRo
 // VolumePoolName implements volumeOwner VolumePoolName method
 func (v *VirtualizationTool) VolumePoolName() string { return v.config.VolumePoolName }
 
-// Mounter implements volumeOwner Mounter method
-func (v *VirtualizationTool) Mounter() utils.Mounter { return v.mounter }
+// FileSystem implements volumeOwner FileSystem method
+func (v *VirtualizationTool) FileSystem() fs.FileSystem { return v.fsys }
 
 // SharedFilesystemPath implements volumeOwner SharedFilesystemPath method
 func (v *VirtualizationTool) SharedFilesystemPath() string { return v.config.SharedFilesystemPath }

@@ -5,8 +5,8 @@ set -o nounset
 set -o pipefail
 set -o errtrace
 
-KUBE_VERSION="${KUBE_VERSION:-1.11}"
-CRIPROXY_DEB_URL="${CRIPROXY_DEB_URL:-https://github.com/Mirantis/criproxy/releases/download/v0.12.0/criproxy-nodeps_0.12.0_amd64.deb}"
+KUBE_VERSION="${KUBE_VERSION:-1.12}"
+CRIPROXY_DEB_URL="${CRIPROXY_DEB_URL:-https://github.com/Mirantis/criproxy/releases/download/v0.14.0/criproxy-nodeps_0.14.0_amd64.deb}"
 NONINTERACTIVE="${NONINTERACTIVE:-}"
 NO_VM_CONSOLE="${NO_VM_CONSOLE:-}"
 INJECT_LOCAL_IMAGE="${INJECT_LOCAL_IMAGE:-}"
@@ -20,6 +20,8 @@ VIRTLET_ON_MASTER="${VIRTLET_ON_MASTER:-}"
 VIRTLET_MULTI_NODE="${VIRTLET_MULTI_NODE:-}"
 IMAGE_REGEXP_TRANSLATION="${IMAGE_REGEXP_TRANSLATION:-1}"
 MULTI_CNI="${MULTI_CNI:-}"
+DEMO_LOG_LEVEL="${DEMO_LOG_LEVEL:-}"
+DIND_CRI="${DIND_CRI:-containerd}"
 # Convenience setting for local testing:
 # BASE_LOCATION="${HOME}/work/kubernetes/src/github.com/Mirantis/virtlet"
 cirros_key="demo-cirros-private-key"
@@ -160,7 +162,10 @@ function demo::install-cni-genie {
 function demo::install-cri-proxy {
   local virtlet_node="${1}"
   demo::step "Installing CRI proxy package on ${virtlet_node} container"
-  docker exec "${virtlet_node}" /bin/bash -c "curl -sSL '${CRIPROXY_DEB_URL}' >/criproxy.deb && dpkg -i /criproxy.deb && rm /criproxy.deb"
+  if [[ ${DIND_CRI} = containerd ]]; then
+    docker exec "${virtlet_node}" /bin/bash -c 'echo criproxy-nodeps criproxy/primary_cri select containerd | debconf-set-selections'
+  fi
+  docker exec "${virtlet_node}" /bin/bash -c "curl -sSL '${CRIPROXY_DEB_URL}' >/criproxy.deb && DEBIAN_FRONTEND=noninteractive dpkg -i /criproxy.deb && rm /criproxy.deb"
 }
 
 function demo::fix-mounts {
@@ -172,12 +177,20 @@ function demo::fix-mounts {
     docker exec "${virtlet_node}" mount --make-shared /boot
   fi
   docker exec "${virtlet_node}" mount --make-shared /sys/fs/cgroup
+  demo::step "Bind-mounting /var/lib/virtlet from a docker volume"
+  docker exec "${virtlet_node}" mkdir -p /dind/virtlet /var/lib/virtlet
+  docker exec "${virtlet_node}" mount --bind /dind/virtlet /var/lib/virtlet
 }
 
 function demo::inject-local-image {
   local virtlet_node="${1}"
   demo::step "Copying local mirantis/virtlet image into ${virtlet_node} container"
-  docker save mirantis/virtlet | docker exec -i "${virtlet_node}" docker load
+  docker save mirantis/virtlet |
+    if [[ ${DIND_CRI} = containerd ]]; then
+      docker exec -i "${virtlet_node}" ctr -n k8s.io images import -
+    else
+      docker exec -i "${virtlet_node}" docker load
+    fi
 }
 
 function demo::label-and-untaint-node {
@@ -362,6 +375,22 @@ function demo::start-virtlet {
     fi
   fi
 
+  if [[ ${DEMO_LOG_LEVEL} ]]; then
+      demo::step "Deploying Virtlet CRDs"
+      docker run --rm "mirantis/virtlet:${virtlet_docker_tag}" virtletctl gen --crd |
+          "${kubectl}" apply -f -
+      "${kubectl}" apply -f - <<EOF
+---
+apiVersion: "virtlet.k8s/v1"
+kind: VirtletConfigMapping
+metadata:
+  name: demo-log-level
+  namespace: kube-system
+spec:
+  config:
+    logLevel: ${DEMO_LOG_LEVEL}
+EOF
+  fi
   demo::step "Deploying Virtlet DaemonSet with docker tag ${virtlet_docker_tag}"
   docker run --rm "mirantis/virtlet:${virtlet_docker_tag}" virtletctl gen --tag "${virtlet_docker_tag}" |
       "${kubectl}" apply -f -

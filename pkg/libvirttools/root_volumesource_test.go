@@ -23,6 +23,7 @@ import (
 	libvirtxml "github.com/libvirt/libvirt-go-xml"
 	digest "github.com/opencontainers/go-digest"
 
+	"github.com/Mirantis/virtlet/pkg/fs"
 	"github.com/Mirantis/virtlet/pkg/metadata/types"
 	"github.com/Mirantis/virtlet/pkg/utils"
 	fakeutils "github.com/Mirantis/virtlet/pkg/utils/fake"
@@ -109,15 +110,19 @@ func TestRootVolumeNaming(t *testing.T) {
 func getRootVolumeForTest(t *testing.T, vmConfig *types.VMConfig) (*rootVolume, *testutils.TopLevelRecorder, *fake.FakeStoragePool) {
 	rec := testutils.NewToplevelRecorder()
 	volumesPoolPath := "/fake/volumes/pool"
-	spool := fake.NewFakeStoragePool(rec.Child("volumes"), &libvirtxml.StoragePool{
+	sc := fake.NewFakeStorageConnection(rec)
+	spool, err := sc.CreateStoragePool(&libvirtxml.StoragePool{
 		Name:   "volumes",
 		Target: &libvirtxml.StoragePoolTarget{Path: volumesPoolPath},
 	})
+	if err != nil {
+		t.Fatalf("CreateStoragePool(): %v", err)
+	}
 	im := newFakeImageManager(rec.Child("image"))
 
 	volumes, err := GetRootVolume(
 		vmConfig,
-		newFakeVolumeOwner(spool, im, fakeutils.NewCommander(nil, nil)))
+		newFakeVolumeOwner(sc, spool.(*fake.FakeStoragePool), im, fakeutils.NewCommander(nil, nil)))
 	if err != nil {
 		t.Fatalf("GetRootVolume returned an error: %v", err)
 	}
@@ -126,7 +131,7 @@ func getRootVolumeForTest(t *testing.T, vmConfig *types.VMConfig) (*rootVolume, 
 		t.Fatalf("GetRootVolumes returned non single number of volumes: %d", len(volumes))
 	}
 
-	return volumes[0].(*rootVolume), rec, spool
+	return volumes[0].(*rootVolume), rec, spool.(*fake.FakeStoragePool)
 }
 
 func TestRootVolumeSize(t *testing.T) {
@@ -136,27 +141,27 @@ func TestRootVolumeSize(t *testing.T) {
 		expectedVolumeSize      int64
 	}{
 		{
-			name: "default (zero)",
+			name:                    "default (zero)",
 			specifiedRootVolumeSize: 0,
 			expectedVolumeSize:      fakeImageVirtualSize,
 		},
 		{
-			name: "negative",
+			name:                    "negative",
 			specifiedRootVolumeSize: -1,
 			expectedVolumeSize:      fakeImageVirtualSize,
 		},
 		{
-			name: "smaller than fakeImageVirtualSize",
+			name:                    "smaller than fakeImageVirtualSize",
 			specifiedRootVolumeSize: fakeImageVirtualSize - 10,
 			expectedVolumeSize:      fakeImageVirtualSize,
 		},
 		{
-			name: "same as fakeImageVirtualSize",
+			name:                    "same as fakeImageVirtualSize",
 			specifiedRootVolumeSize: fakeImageVirtualSize,
 			expectedVolumeSize:      fakeImageVirtualSize,
 		},
 		{
-			name: "greater than fakeImageVirtualSize",
+			name:                    "greater than fakeImageVirtualSize",
 			specifiedRootVolumeSize: fakeImageVirtualSize + 10,
 			expectedVolumeSize:      fakeImageVirtualSize + 10,
 		},
@@ -196,8 +201,9 @@ func TestRootVolumeSize(t *testing.T) {
 func TestRootVolumeLifeCycle(t *testing.T) {
 	expectedRootVolumePath := "/fake/volumes/pool/virtlet_root_" + testUUID
 	rootVol, rec, _ := getRootVolumeForTest(t, &types.VMConfig{
-		DomainUUID: testUUID,
-		Image:      "fake/image1",
+		DomainUUID:        testUUID,
+		Image:             "fake/image1",
+		ParsedAnnotations: &types.VirtletAnnotations{},
 	})
 
 	vol, fs, err := rootVol.Setup()
@@ -234,7 +240,28 @@ func TestRootVolumeLifeCycle(t *testing.T) {
 	gm.Verify(t, gm.NewYamlVerifier(rec.Content()))
 }
 
+func TestRootVolumeFiles(t *testing.T) {
+	rootVol, rec, _ := getRootVolumeForTest(t, &types.VMConfig{
+		DomainUUID: testUUID,
+		Image:      "fake/image1",
+		ParsedAnnotations: &types.VirtletAnnotations{
+			InjectedFiles: map[string][]byte{
+				"/foo/bar.txt": []byte("bar"),
+				"/foo/baz.txt": []byte("baz"),
+			},
+		},
+	})
+
+	_, _, err := rootVol.Setup()
+	if err != nil {
+		t.Fatalf("Setup returned an error: %v", err)
+	}
+
+	gm.Verify(t, gm.NewYamlVerifier(rec.Content()))
+}
+
 type fakeVolumeOwner struct {
+	sc           *fake.FakeStorageConnection
 	storagePool  *fake.FakeStoragePool
 	imageManager *fakeImageManager
 	commander    *fakeutils.Commander
@@ -242,8 +269,9 @@ type fakeVolumeOwner struct {
 
 var _ volumeOwner = fakeVolumeOwner{}
 
-func newFakeVolumeOwner(storagePool *fake.FakeStoragePool, imageManager *fakeImageManager, commander *fakeutils.Commander) *fakeVolumeOwner {
+func newFakeVolumeOwner(sc *fake.FakeStorageConnection, storagePool *fake.FakeStoragePool, imageManager *fakeImageManager, commander *fakeutils.Commander) *fakeVolumeOwner {
 	return &fakeVolumeOwner{
+		sc:           sc,
 		storagePool:  storagePool,
 		imageManager: imageManager,
 		commander:    commander,
@@ -258,6 +286,10 @@ func (vo fakeVolumeOwner) DomainConnection() virt.DomainConnection {
 	return nil
 }
 
+func (vo fakeVolumeOwner) StorageConnection() virt.StorageConnection {
+	return vo.sc
+}
+
 func (vo fakeVolumeOwner) ImageManager() ImageManager {
 	return vo.imageManager
 }
@@ -268,7 +300,7 @@ func (vo fakeVolumeOwner) KubeletRootDir() string { return "" }
 
 func (vo fakeVolumeOwner) VolumePoolName() string { return "" }
 
-func (vo fakeVolumeOwner) Mounter() utils.Mounter { return utils.NullMounter }
+func (vo fakeVolumeOwner) FileSystem() fs.FileSystem { return fs.NullFileSystem }
 
 func (vo fakeVolumeOwner) SharedFilesystemPath() string { return "/var/lib/virtlet/fs" }
 

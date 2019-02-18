@@ -1,3 +1,4 @@
+version: 2.1
 defaults: &defaults
   docker:
     - image: ubuntu:xenial
@@ -6,6 +7,12 @@ defaults: &defaults
     DOCKER_VERSION: "17.03.0-ce"
     KUBECTL_VERSION: "v1.9.3"
     KUBECTL_SHA1: "a27d808eb011dbeea876fe5326349ed167a7ed28"
+    # remove DIND_CRI to use dockershim
+    DIND_CRI: containerd
+    # Uncomment the following to use ginkgo.focus for e2e
+    # E2E_FOCUS: "Specify a regexp.*here"
+    # The branch which is used for publishing docs
+    DOCS_SOURCE_BRANCH: master
 
 prereqs: &prereqs
   name: Install prerequisites
@@ -17,7 +24,7 @@ setup_env: &setup_env
   name: Set up the environment
   command: |
     # Install Docker client
-    curl -sSL -o "/tmp/docker-${DOCKER_VERSION}.tgz" "https://get.docker.com/builds/Linux/x86_64/docker-${DOCKER_VERSION}.tgz"
+    curl -sSL -o "/tmp/docker-${DOCKER_VERSION}.tgz" "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz"
     tar -xz -C /tmp -f "/tmp/docker-${DOCKER_VERSION}.tgz"
     mv /tmp/docker/* /usr/bin
 
@@ -81,7 +88,7 @@ push_images: &push_images
       command: |
         apt-get -qq update
         apt-get install -y curl ca-certificates
-        curl -sSL -o "/tmp/docker-${DOCKER_VERSION}.tgz" "https://get.docker.com/builds/Linux/x86_64/docker-${DOCKER_VERSION}.tgz"
+        curl -sSL -o "/tmp/docker-${DOCKER_VERSION}.tgz" "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz"
         tar -xz -C /tmp -f "/tmp/docker-${DOCKER_VERSION}.tgz"
         mv /tmp/docker/* /usr/bin
   - restore_cache:
@@ -162,10 +169,8 @@ e2e: &e2e
         elif [[ ${CIRCLE_JOB} = e2e_multi_cni ]]; then
           export MULTI_CNI=1
           echo >&2 "*** Using multiple CNIs (flannel + calico)"
-        elif [[ ${CIRCLE_JOB} = e2e_1_9 ]]; then
-          export KUBE_VERSION=1.9
-        elif [[ ${CIRCLE_JOB} = e2e_1_10 ]]; then
-          export KUBE_VERSION=1.10
+        elif [[ ${CIRCLE_JOB} = e2e_1_11 ]]; then
+          export KUBE_VERSION=1.11
         fi
         # APISERVER_PORT is set explicitly to avoid dynamic allocation
         # of the port by kdc
@@ -176,6 +181,7 @@ e2e: &e2e
           INJECT_LOCAL_IMAGE=1 \
           VIRTLET_DEMO_BRANCH=master \
           ENABLE_CEPH=1 \
+          DEMO_LOG_LEVEL=6 \
           FEATURE_GATES="BlockVolume=true" \
           KUBELET_FEATURE_GATES="BlockVolume=true" \
           BASE_LOCATION="$PWD" \
@@ -190,36 +196,40 @@ e2e: &e2e
   - run:
       name: Prepare all of the nodes for Virtlet pod
       command: |
-        build/cmd.sh prepare-all-nodes
+        build/portforward.sh 8080&
+        VIRTLET_SKIP_RSYNC=1 build/cmd.sh prepare-all-nodes
 
   - run:
       name: Run e2e tests
       command: |
         build/portforward.sh 8080&
         mkdir -p ~/junit
-        skip="-ginkgo.skip=\[Heavy\]|\[MultiCNI\]|\[Disruptive\]"
+        skip_focus=("-ginkgo.skip=\[Heavy\]|\[MultiCNI\]|\[Disruptive\]|\[Flaky\]")
         if [[ ${CIRCLE_JOB} = e2e_multi_cni ]]; then
           # per-node config test requires an additional worker node
-          skip="-ginkgo.skip=\[Heavy\]|\[Disruptive\]|Per-node configuration"
+          skip_focus="-ginkgo.skip=\[Heavy\]|\[Disruptive\]|\[Flaky\]|Per-node configuration"
         fi
-        _output/virtlet-e2e-tests -test.v "${skip}" -junitOutput ~/junit/junit.xml -include-unsafe-tests=true
+        if [[ ${E2E_FOCUS:-} ]]; then
+          skip_focus+=("-ginkgo.focus=${E2E_FOCUS}")
+        fi
+        _output/virtlet-e2e-tests -test.v "${skip_focus[@]}" -junitOutput ~/junit/junit.xml -include-unsafe-tests=true
 
   - store_test_results:
       path: ~/junit
 
   - run:
-      name: Dump the cluster state
+      name: Dump the cluster state and display Virtlet version
       when: always
       command: |
         build/portforward.sh 8080&
         mkdir -p /tmp/cluster_state
         bash -x ./dind-cluster*.sh dump | gzip >/tmp/cluster_state/kdc-dump.gz
         _output/virtletctl diag dump --json | gzip >/tmp/cluster_state/virtlet-dump.json.gz
+        _output/virtletctl version
 
   - store_artifacts:
       path: /tmp/cluster_state
 
-version: 2
 jobs:
   prepare_build:
     <<: *defaults
@@ -381,10 +391,7 @@ jobs:
   e2e_multi_cni:
     <<: *e2e
 
-  # e2e_1_9:
-  #   <<: *e2e
-
-  e2e_1_10:
+  e2e_1_11:
     <<: *e2e
 
   push_branch:
@@ -392,6 +399,37 @@ jobs:
 
   push_tested:
     <<: *push_images
+
+  build_docs:
+    <<: *defaults
+    steps:
+    - run:
+        <<: *prereqs
+    - checkout
+    - setup_remote_docker
+    - run:
+        <<: *setup_env
+    - restore_cache:
+        <<: *restore_image_cache
+    - run:
+        name: Update docs and push them to docs branch
+        command: |
+          build/portforward.sh 18730&
+          git config --global user.email bot@virtlet.cloud
+          git config --global user.name virtlet-bot
+          git fetch -f https://github.com/Mirantis/virtlet.git docs:docs
+          build/cmd.sh build-docs
+          if [[ ${CIRCLE_BRANCH:-} != ${DOCS_SOURCE_BRANCH} ]]; then
+            echo >&2 "Not updating docs branch: current branch is ${CIRCLE_BRANCH:-} not ${DOCS_SOURCE_BRANCH}"
+          elif [[ ! ${GITHUB_TOKEN:-} ]]; then
+            echo >&2 "Not updating docs branch: missing GITHUB_TOKEN env var"
+          else
+            # if the docs didn't change, this push will do nothing
+            git push https://${GITHUB_TOKEN}@github.com/Mirantis/virtlet.git docs:docs
+          fi
+          tar -czf /tmp/docs.tar.gz _docs
+    - store_artifacts:
+        path: /tmp/docs.tar.gz
 
   release:
     <<: *defaults
@@ -423,43 +461,47 @@ workflows:
     - prepare_build:
         filters:
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
     - build:
         requires:
         - prepare_build
         filters:
+          branches:
+            ignore: /^.*-docs$/
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
     - test:
         requires:
         - prepare_build
         filters:
+          branches:
+            ignore: /^.*-docs$/
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
     - integration:
         requires:
         - build
         filters:
+          branches:
+            ignore: /^.*-docs$/
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
     - e2e:
         requires:
         - build
         filters:
+          branches:
+            ignore: /^.*-docs$/
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
     - e2e_calico:
         requires:
         - build
         filters:
+          branches:
+            ignore: /^.*-docs$/
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
     - e2e_flannel:
         requires:
         - build
@@ -467,8 +509,7 @@ workflows:
           branches:
             only: /^master$|^.*-net$/
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
     - e2e_weave:
         requires:
         - build
@@ -476,8 +517,7 @@ workflows:
           branches:
             only: /^master$|^.*-net$/
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
     - e2e_multi_cni:
         requires:
         - build
@@ -485,29 +525,21 @@ workflows:
           branches:
             only: /^master$|^.*-net$/
           tags:
-            only:
-              - /^v[0-9].*/
-    # - e2e_1_9:
-    #     requires:
-    #     - build
-    #     filters:
-    #       tags:
-    #         only:
-    #           - /^v[0-9].*/
-    - e2e_1_10:
+            only: /^v[0-9].*/
+    - e2e_1_11:
         requires:
         - build
         filters:
+          branches:
+            ignore: /^.*-docs$/
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
     - push_branch:
         requires:
         - build
         filters:
           branches:
-            ignore:
-              /^master$|^pull\//
+            ignore: /^master$|^pull\/|^.*-docs$/
     - push_tested:
         requires:
         - test
@@ -516,15 +548,13 @@ workflows:
         - e2e_flannel
         - e2e_weave
         - e2e_multi_cni
-        # - e2e_1_9
-        - e2e_1_10
+        - e2e_1_11
         - integration
         filters:
           branches:
             only: master
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
     - release:
         requires:
         - push_tested
@@ -532,5 +562,8 @@ workflows:
           branches:
             ignore: /.*/
           tags:
-            only:
-              - /^v[0-9].*/
+            only: /^v[0-9].*/
+    - build_docs:
+        requires:
+        - prepare_build
+            

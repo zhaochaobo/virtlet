@@ -17,6 +17,7 @@ limitations under the License.
 package libvirttools
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -31,33 +32,31 @@ import (
 )
 
 func init() {
-	types.SetExternalDataLoader(loadExternalUserData)
+	types.SetExternalDataLoader(&defaultExternalDataLoader{})
 }
 
-func loadExternalUserData(va *types.VirtletAnnotations, ns string, podAnnotations map[string]string) error {
-	if ns == "" {
+type defaultExternalDataLoader struct {
+	kubeClient kubernetes.Interface
+}
+
+var _ types.ExternalDataLoader = &defaultExternalDataLoader{}
+
+// LoadCloudInitData implements LoadCloudInitData method of ExternalDataLoader interface.
+func (l *defaultExternalDataLoader) LoadCloudInitData(va *types.VirtletAnnotations, namespace string, podAnnotations map[string]string) error {
+	if namespace == "" {
 		return nil
 	}
-	var clientset *kubernetes.Clientset
 	var err error
 	userDataSourceKey := podAnnotations[types.CloudInitUserDataSourceKeyName]
 	sshKeySourceKey := podAnnotations[types.SSHKeySourceKeyName]
-	if userDataSourceKey != "" || sshKeySourceKey != "" {
-		if clientset == nil {
-			clientset, err = utils.GetK8sClientset(nil)
-			if err != nil {
-				return err
-			}
-		}
-	}
 	if userDataSourceKey != "" {
-		err = loadUserDataFromDataSource(va, ns, userDataSourceKey, clientset)
+		err = l.loadUserDataFromDataSource(va, namespace, userDataSourceKey)
 		if err != nil {
 			return err
 		}
 	}
 	if sshKeySourceKey != "" {
-		err = loadSSHKeysFromDataSource(va, ns, sshKeySourceKey, clientset)
+		err = l.loadSSHKeysFromDataSource(va, namespace, sshKeySourceKey)
 		if err != nil {
 			return err
 		}
@@ -65,12 +64,30 @@ func loadExternalUserData(va *types.VirtletAnnotations, ns string, podAnnotation
 	return nil
 }
 
-func loadUserDataFromDataSource(va *types.VirtletAnnotations, ns, key string, clientset *kubernetes.Clientset) error {
+// LoadFileMap implements LoadFileMap method of ExternalDataLoader interface.
+func (l *defaultExternalDataLoader) LoadFileMap(namespace, dsSpec string) (map[string][]byte, error) {
+	if namespace == "" {
+		return nil, nil
+	}
+	parts := strings.Split(dsSpec, "/")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid %q annotation format. Expected kind/name, but insted got %q", types.FilesFromDSKeyName, dsSpec)
+	}
+
+	data, err := l.readK8sKeySource(parts[0], parts[1], namespace, "")
+	if err != nil {
+		return nil, err
+	}
+
+	return parseDataAsFileMap(data)
+}
+
+func (l *defaultExternalDataLoader) loadUserDataFromDataSource(va *types.VirtletAnnotations, namespace, key string) error {
 	parts := strings.Split(key, "/")
 	if len(parts) != 2 {
-		return fmt.Errorf("invalid %s annotation format. Expected kind/name, but insted got %s", types.CloudInitUserDataSourceKeyName, key)
+		return fmt.Errorf("invalid %q annotation format. Expected kind/name, but insted got %s", types.CloudInitUserDataSourceKeyName, key)
 	}
-	ud, err := readK8sKeySource(parts[0], parts[1], ns, "", clientset)
+	ud, err := l.readK8sKeySource(parts[0], parts[1], namespace, "")
 	if err != nil {
 		return err
 	}
@@ -84,7 +101,7 @@ func loadUserDataFromDataSource(va *types.VirtletAnnotations, ns, key string, cl
 	return nil
 }
 
-func loadSSHKeysFromDataSource(va *types.VirtletAnnotations, ns, key string, clientset *kubernetes.Clientset) error {
+func (l *defaultExternalDataLoader) loadSSHKeysFromDataSource(va *types.VirtletAnnotations, namespace, key string) error {
 	parts := strings.Split(key, "/")
 	if len(parts) != 2 && len(parts) != 3 {
 		return fmt.Errorf("invalid %s annotation format. Expected kind/name[/key], but insted got %s", types.SSHKeySourceKeyName, key)
@@ -93,7 +110,7 @@ func loadSSHKeysFromDataSource(va *types.VirtletAnnotations, ns, key string, cli
 	if len(parts) == 3 {
 		dataKey = parts[2]
 	}
-	ud, err := readK8sKeySource(parts[0], parts[1], ns, dataKey, clientset)
+	ud, err := l.readK8sKeySource(parts[0], parts[1], namespace, dataKey)
 	if err != nil {
 		return err
 	}
@@ -108,11 +125,25 @@ func loadSSHKeysFromDataSource(va *types.VirtletAnnotations, ns, key string, cli
 	return nil
 }
 
-func readK8sKeySource(sourceType, sourceName, ns, key string, clientset *kubernetes.Clientset) (map[string]string, error) {
+func (l *defaultExternalDataLoader) ensureKubeClient() error {
+	if l.kubeClient == nil {
+		var err error
+		l.kubeClient, err = utils.GetK8sClientset(nil)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (l *defaultExternalDataLoader) readK8sKeySource(sourceType, sourceName, namespace, key string) (map[string]string, error) {
+	if err := l.ensureKubeClient(); err != nil {
+		return nil, err
+	}
 	sourceType = strings.ToLower(sourceType)
 	switch sourceType {
 	case "secret":
-		secret, err := clientset.CoreV1().Secrets(ns).Get(sourceName, meta_v1.GetOptions{})
+		secret, err := l.kubeClient.CoreV1().Secrets(namespace).Get(sourceName, meta_v1.GetOptions{})
 		if err != nil {
 			return nil, err
 		}
@@ -125,7 +156,7 @@ func readK8sKeySource(sourceType, sourceName, ns, key string, clientset *kuberne
 		}
 		return result, nil
 	case "configmap":
-		configmap, err := clientset.CoreV1().ConfigMaps(ns).Get(sourceName, meta_v1.GetOptions{})
+		configmap, err := l.kubeClient.CoreV1().ConfigMaps(namespace).Get(sourceName, meta_v1.GetOptions{})
 		if err != nil {
 			return nil, err
 		}
@@ -142,4 +173,35 @@ func readK8sKeySource(sourceType, sourceName, ns, key string, clientset *kuberne
 	}
 }
 
-// TODO: create a test for loadExternalUserData
+func parseDataAsFileMap(data map[string]string) (map[string][]byte, error) {
+	files := make(map[string][]byte)
+	for k, v := range data {
+		if strings.HasSuffix(k, "_path") || strings.HasSuffix(k, "_encoding") {
+			continue
+		}
+
+		path, pOk := data[k+"_path"]
+		if !pOk {
+			return nil, fmt.Errorf("missing path for %q entry", k)
+		}
+
+		encoding, eOk := data[k+"_encoding"]
+		if !eOk {
+			encoding = "base64"
+		}
+
+		switch encoding {
+		case "plain":
+			files[path] = []byte(v)
+		case "base64":
+			data, err := base64.StdEncoding.DecodeString(v)
+			if err != nil {
+				return nil, fmt.Errorf("cannot decode data under %q key as base64 encoded: %v", k, err)
+			}
+			files[path] = data
+		default:
+			return nil, fmt.Errorf("unkonwn encoding %q for %q", encoding, k)
+		}
+	}
+	return files, nil
+}
